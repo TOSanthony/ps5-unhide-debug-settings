@@ -1,0 +1,71 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+env:
+  # Change these to pin other versions.
+  SDK_URL: https://github.com/ps5-payload-dev/sdk/releases/latest/download/ps5-payload-sdk.zip
+  SQLITE_URL: https://www.sqlite.org/2024/sqlite-amalgamation-3460100.zip
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang lld unzip curl
+
+      - name: Install ps5-payload-sdk
+        run: |
+          curl -fsSL -o /tmp/sdk.zip "$SDK_URL"
+          sudo unzip -q -d /opt /tmp/sdk.zip
+          echo "PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk" >> "$GITHUB_ENV"
+
+      - name: Fetch SQLite amalgamation
+        run: |
+          curl -fsSL -o /tmp/sqlite.zip "$SQLITE_URL"
+          unzip -j -q /tmp/sqlite.zip '*/sqlite3.c' '*/sqlite3.h' -d .
+
+      - name: Build
+        run: make
+
+      - name: Checksum
+        run: sha256sum unhide_debug.elf | tee unhide_debug.elf.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unhide_debug
+          path: |
+            unhide_debug.elf
+            unhide_debug.elf.sha256
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unhide_debug
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            unhide_debug.elf unhide_debug.elf.sha256
