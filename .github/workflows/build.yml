@@ -51,21 +51,36 @@ jobs:
             unhide_debug.elf.sha256
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
     needs: build
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    concurrency:
+      group: release
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: unhide_debug
-      - name: Create GitHub release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
-            --repo "$GITHUB_REPOSITORY" \
-            --title "$GITHUB_REF_NAME" \
-            --generate-notes \
-            unhide_debug.elf unhide_debug.elf.sha256
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            # Tag vX.Y.Z -> release versionnée
+            gh release create "$GITHUB_REF_NAME" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$GITHUB_REF_NAME" \
+              --generate-notes \
+              unhide_debug.elf unhide_debug.elf.sha256
+          else
+            # Push sur main -> release "latest" recréée à chaque fois
+            gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+            gh release create latest \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --prerelease \
+              --title "Latest build (${GITHUB_SHA::7})" \
+              --notes "Build automatique du commit $GITHUB_SHA" \
+              unhide_debug.elf unhide_debug.elf.sha256
+          fi
