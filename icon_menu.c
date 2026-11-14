@@ -6,8 +6,7 @@
  *   - Welcome Hub       (NPXS40063)
  *   - PlayStation Plus  (NPXS40037)
  * and a switch to pin Orbit Store (PPSA99177) like the PlayStation Store
- * (system group, dispLocation=146, leftmost), and a switch that makes the
- * PlayStation Store tile (kept pinned by the console) launch Orbit Store instead.
+ * (system group, dispLocation=146, leftmost).
  *
  * Launch the ELF, then open  http://<IP de la PS5>:8095/  from a phone or PC
  * on the same network (the IP is shown in a notification and on stdout).
@@ -42,21 +41,6 @@ static const item_t PINS[] = {
 };
 #define N_PINS (sizeof PINS / sizeof PINS[0])
 
-/* System tiles that can be re-pointed to launch another app. */
-typedef struct {
-    const char *id;
-    const char *tile_id;     /* tile that stays pinned by the console */
-    const char *label;
-    const char *target_id;   /* app launched by the tile */
-    const char *new_name;    /* name shown while swapped */
-    const char *orig_name;   /* fallback name when restoring */
-} swap_t;
-
-static const swap_t SWAPS[] = {
-    {"swap", "NPXS40047", "Orbit Store à la place du PlayStation Store",
-     "PPSA99177", "Orbit Store", "PlayStation Store"},
-};
-#define N_SWAPS (sizeof SWAPS / sizeof SWAPS[0])
 
 static int g_backed_up = 0;
 static int g_quit = 0;
@@ -91,16 +75,7 @@ static const char PAGE[] =
 "d.innerHTML='<div>'+p.label+'<small>'+(p.found?'Épinglé comme le PlayStation Store':'introuvable dans app.db')+'</small></div>"
 "<label class=sw><input type=checkbox '+(p.pinned?'checked ':'')+(p.found?'':'disabled ')+"
 "'><span class=sl></span></label>';"
-"d.querySelector('input').onchange=e=>pin(p.id,e.target.checked);l.appendChild(d)}"
-"for(const p of s.swaps){const d=document.createElement('div');d.className='row';"
-"d.innerHTML='<div>'+p.label+'<small>'+(p.found?'La tuile du Store lance Orbit':'introuvable dans app.db')+'</small></div>"
-"<label class=sw><input type=checkbox '+(p.swapped?'checked ':'')+(p.found?'':'disabled ')+"
-"'><span class=sl></span></label>';"
-"d.querySelector('input').onchange=e=>swap(p.id,e.target.checked);l.appendChild(d)}}"
-"async function swap(id,v){const m=document.getElementById('msg');"
-"const r=await fetch('/api/swap?id='+id+'&v='+(v?1:0),{method:'POST',headers:H});"
-"m.textContent=r.ok?'Enregistré. Redémarre la PS5 pour appliquer.':'Erreur ('+r.status+')';"
-"m.style.color=r.ok?'#8fd19e':'#ff8a8a';load()}"
+"d.querySelector('input').onchange=e=>pin(p.id,e.target.checked);l.appendChild(d)}}"
 "async function pin(id,v){const m=document.getElementById('msg');"
 "const r=await fetch('/api/pin?id='+id+'&v='+(v?1:0),{method:'POST',headers:H});"
 "m.textContent=r.ok?'Enregistré. Redémarre la PS5 pour appliquer.':'Erreur ('+r.status+')';"
@@ -163,16 +138,8 @@ static void state_json(char *out, size_t cap) {
             i ? "," : "", PINS[i].id, PINS[i].label,
             found ? "true" : "false", pinned ? "true" : "false");
     }
-    off += (size_t)snprintf(out + off, cap - off, "],\"swaps\":[");
-    for (size_t i = 0; i < N_SWAPS; i++) {
-        int swapped = 0;
-        int found = db ? appdb_swap_state(db, SWAPS[i].tile_id, SWAPS[i].target_id, &swapped) : 0;
-        off += (size_t)snprintf(out + off, cap - off,
-            "%s{\"id\":\"%s\",\"label\":\"%s\",\"found\":%s,\"swapped\":%s}",
-            i ? "," : "", SWAPS[i].id, SWAPS[i].label,
-            found ? "true" : "false", swapped ? "true" : "false");
-    }
-    snprintf(out + off, cap - off, "]}");
+    off += (size_t)snprintf(out + off, cap - off, "]");
+    snprintf(out + off, cap - off, "}");
     if (db) sqlite3_close(db);
 }
 
@@ -216,29 +183,6 @@ static int pin_item(const item_t *it, int on) {
     if (changed >= 0)
         appdb_say("%s: %s (%d row(s)). Reboot to apply.", it->label,
                   on ? "PINNED (system group)" : "UNPINNED (games row)", changed);
-    return changed;
-}
-
-static const swap_t *find_swap(const char *id) {
-    for (size_t i = 0; i < N_SWAPS; i++)
-        if (!strcmp(SWAPS[i].id, id)) return &SWAPS[i];
-    return NULL;
-}
-
-static int swap_item(const swap_t *sw, int on) {
-    sqlite3 *db = appdb_open();
-    if (!db) return -1;
-    int swapped = 0;
-    if (!appdb_swap_state(db, sw->tile_id, sw->target_id, &swapped)) { sqlite3_close(db); return -1; }
-    if (!g_backed_up) {
-        if (appdb_backup() != 0) { sqlite3_close(db); return -1; }
-        g_backed_up = 1;
-    }
-    int changed = appdb_swap_tile(db, sw->tile_id, sw->target_id, sw->new_name, sw->orig_name, on);
-    sqlite3_close(db);
-    if (changed >= 0)
-        appdb_say("%s: %s (%d row(s)). Reboot to apply.", sw->new_name,
-                  on ? "tile now launches it" : "tile restored", changed);
     return changed;
 }
 
@@ -317,15 +261,6 @@ static void handle(int fd) {
             if (!it || (strcmp(v, "0") && strcmp(v, "1")))
                 reply(fd, 400, "text/plain", "bad params");
             else if (pin_item(it, v[0] == '1') < 0) reply(fd, 500, "text/plain", "failed");
-            else reply(fd, 200, "application/json", "{\"ok\":true}");
-        } else if (!strcmp(target, "/api/swap")) {
-            char id[16], v[4];
-            query_get(query ? query : "", "id", id, sizeof id);
-            query_get(query ? query : "", "v", v, sizeof v);
-            const swap_t *sw = find_swap(id);
-            if (!sw || (strcmp(v, "0") && strcmp(v, "1")))
-                reply(fd, 400, "text/plain", "bad params");
-            else if (swap_item(sw, v[0] == '1') < 0) reply(fd, 500, "text/plain", "failed");
             else reply(fd, 200, "application/json", "{\"ok\":true}");
         } else if (!strcmp(target, "/api/quit")) {
             reply(fd, 200, "application/json", "{\"ok\":true}");
