@@ -8,7 +8,7 @@ l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 |---|---|
 | `welcome_hub.elf` | met `visible=1` pour `NPXS40063` (Welcome Hub) |
 | `toggle_store.elf` | **bascule** l'icône PlayStation Store (`NPXS40047`) : la cache si elle est visible, la réaffiche si elle est cachée |
-| `icon_menu.elf` | **menu web avec interrupteurs** pour afficher/masquer le PlayStation Store et le Welcome Hub |
+| `icon_menu.elf` | **menu web avec interrupteurs** pour afficher/masquer le PlayStation Store, le Welcome Hub et PlayStation Plus |
 
 ### Menu `icon_menu.elf`
 

@@ -4,6 +4,7 @@
  * Small web menu with switches to show/hide home-screen icons:
  *   - PlayStation Store (NPXS40047)
  *   - Welcome Hub       (NPXS40063)
+ *   - PlayStation Plus  (NPXS40037)
  *
  * Launch the ELF, then open  http://<IP de la PS5>:8095/  from a phone or PC
  * on the same network (the IP is shown in a notification and on stdout).
@@ -28,6 +29,7 @@ typedef struct {
 static const item_t ITEMS[] = {
     {"store", "NPXS40047", "PlayStation Store"},
     {"hub",   "NPXS40063", "Welcome Hub"},
+    {"plus",  "NPXS40037", "PlayStation Plus"},
 };
 #define N_ITEMS (sizeof ITEMS / sizeof ITEMS[0])
 
@@ -181,7 +183,7 @@ static void handle(int fd) {
     if (!strcmp(method, "GET") && !strcmp(target, "/")) {
         reply(fd, 200, "text/html; charset=utf-8", PAGE);
     } else if (!strcmp(method, "GET") && !strcmp(target, "/api/state")) {
-        char json[1024];
+        char json[2048];
         state_json(json, sizeof json);
         reply(fd, 200, "application/json", json);
     } else if (!strcmp(method, "POST")) {
