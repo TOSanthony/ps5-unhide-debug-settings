@@ -8,6 +8,14 @@ l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 |---|---|
 | `welcome_hub.elf` | met `visible=1` pour `NPXS40063` (Welcome Hub) |
 | `toggle_store.elf` | **bascule** l'icône PlayStation Store (`NPXS40047`) : la cache si elle est visible, la réaffiche si elle est cachée |
+| `icon_menu.elf` | **menu web avec interrupteurs** pour afficher/masquer le PlayStation Store et le Welcome Hub |
+
+### Menu `icon_menu.elf`
+
+Lance l'ELF : une notification et la sortie standard affichent l'adresse `http://<IP de la PS5>:8095/`.
+Ouvre-la depuis un téléphone ou un PC du même réseau, utilise les interrupteurs, puis redémarre la console.
+Bouton « Arrêter le menu » pour libérer le port avant de relancer. Le menu n'a pas de mot de passe :
+ne le laisse pas tourner sur un réseau que tu ne maîtrises pas. `app.db` est sauvegardé une fois par lancement.
 
 Redémarre la console après l'exécution. Ne les utilise que sur ta propre console.
 Code commun (sauvegarde, accès SQLite) : `appdb.h`.
