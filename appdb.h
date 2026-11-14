@@ -242,11 +242,15 @@ APPDB_FN int appdb_system_state(sqlite3 *db, const char *title_id, int *pinned) 
     for (int i = 0; i < n; i++) {
         if (!found) {
             char *sql = sqlite3_mprintf(
-                "SELECT dispLocation FROM \"%w\" WHERE titleId=%Q LIMIT 1", names[i], title_id);
+                "SELECT dispLocation, primaryTitleSort = IFNULL((SELECT primaryTitleSort FROM \"%w\""
+                " WHERE dispLocation=%d AND titleId LIKE 'NPXS%%' LIMIT 1), -1) "
+                "FROM \"%w\" WHERE titleId=%Q LIMIT 1",
+                names[i], APPDB_DISP_SYSTEM, names[i], title_id);
             sqlite3_stmt *st = NULL;
             if (sql && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
                 if (sqlite3_step(st) == SQLITE_ROW) {
-                    *pinned = sqlite3_column_int(st, 0) == APPDB_DISP_SYSTEM;
+                    *pinned = sqlite3_column_int(st, 0) == APPDB_DISP_SYSTEM
+                              && sqlite3_column_int(st, 1) == 1;
                     found = 1;
                 }
                 sqlite3_finalize(st);
@@ -258,9 +262,11 @@ APPDB_FN int appdb_system_state(sqlite3 *db, const char *title_id, int *pinned) 
     return found;
 }
 
-/* on=1: move title_id into the system group (dispLocation=146, pinnedStatus=2,
- *       lastAccessIndex just below the lowest one in that group) -> leftmost.
- * on=0: back to the games row (dispLocation=138, pinnedStatus=NULL, most recent).
+/* on=1: move title_id into the system group: dispLocation=146, pinnedStatus=2, the
+ *       same primaryTitleSort as the system apps (otherwise it is still sorted with
+ *       the games), lastAccessIndex just below the lowest one in that group.
+ * on=0: back to the games row (dispLocation=138, pinnedStatus=NULL, games sort key,
+ *       most recent index).
  * Applied in every table where the title exists. Returns rows changed, or -1. */
 APPDB_FN int appdb_set_system_pin(sqlite3 *db, const char *title_id, int on) {
     char *names[64];
@@ -272,16 +278,24 @@ APPDB_FN int appdb_set_system_pin(sqlite3 *db, const char *title_id, int on) {
         char *sql;
         if (on)
             sql = sqlite3_mprintf(
-                "UPDATE \"%w\" SET dispLocation=%d, pinnedStatus=2, visible=1, lastAccessIndex="
+                "UPDATE \"%w\" SET dispLocation=%d, pinnedStatus=2, visible=1,"
+                " primaryTitleSort=IFNULL((SELECT primaryTitleSort FROM \"%w\""
+                "  WHERE dispLocation=%d AND titleId LIKE 'NPXS%%' LIMIT 1), 4295163907),"
+                " lastAccessIndex="
                 " (SELECT IFNULL(MIN(lastAccessIndex),2)-1 FROM \"%w\""
                 "  WHERE dispLocation=%d AND titleId<>%Q) WHERE titleId=%Q",
-                names[i], APPDB_DISP_SYSTEM, names[i], APPDB_DISP_SYSTEM, title_id, title_id);
+                names[i], APPDB_DISP_SYSTEM, names[i], APPDB_DISP_SYSTEM,
+                names[i], APPDB_DISP_SYSTEM, title_id, title_id);
         else
             sql = sqlite3_mprintf(
-                "UPDATE \"%w\" SET dispLocation=%d, pinnedStatus=NULL, lastAccessIndex="
+                "UPDATE \"%w\" SET dispLocation=%d, pinnedStatus=NULL,"
+                " primaryTitleSort=IFNULL((SELECT primaryTitleSort FROM \"%w\""
+                "  WHERE dispLocation=%d AND titleId<>%Q LIMIT 1), 4295164933),"
+                " lastAccessIndex="
                 " (SELECT IFNULL(MAX(lastAccessIndex),0)+1 FROM \"%w\" WHERE titleId<>%Q) "
                 "WHERE titleId=%Q",
-                names[i], APPDB_DISP_GAMES, names[i], title_id, title_id);
+                names[i], APPDB_DISP_GAMES, names[i], APPDB_DISP_GAMES, title_id,
+                names[i], title_id, title_id);
         if (!sql) { err = 1; }
         else if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &e) != SQLITE_OK) {
             appdb_say("%s: %s", names[i], e ? e : "begin failed"); err = 1;

@@ -15,8 +15,8 @@ l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 Lance l'ELF : une notification et la sortie standard affichent l'adresse `http://<IP de la PS5>:8095/`.
 Ouvre-la depuis un téléphone ou un PC du même réseau, utilise les interrupteurs, puis redémarre la console.
 Un interrupteur épingle Orbit Store (`PPSA99177`) comme le PlayStation Store : l'entrée est rangée dans le
-groupe système (`dispLocation=146`, `pinnedStatus=2`) avec le plus petit `lastAccessIndex` du groupe, donc tout à
-gauche. En le désactivant, elle retourne dans la rangée des jeux (`dispLocation=138`). Non testé sur console :
+groupe système (`dispLocation=146`, `pinnedStatus=2`, même `primaryTitleSort` que les apps système, sinon la console
+le trie avec les jeux) avec le plus petit `lastAccessIndex` du groupe. En le désactivant, elle retourne dans la rangée des jeux (`dispLocation=138`). Non testé sur console :
 la sauvegarde `/data/app.db.*.bak` permet de revenir en arrière. Bouton « Arrêter le menu » pour libérer le port avant de relancer. Le menu n'a pas de mot de passe :
 ne le laisse pas tourner sur un réseau que tu ne maîtrises pas. `app.db` est sauvegardé une fois par lancement.
 
