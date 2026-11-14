@@ -16,6 +16,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <signal.h>
+#include <sys/select.h>
 #include <sys/socket.h>
 
 #include "appdb.h"
@@ -44,6 +45,7 @@ static const item_t PINS[] = {
 
 static int g_backed_up = 0;
 static int g_quit = 0;
+static int g_watch[N_PINS];   /* 1 = keep this pin locked while the menu runs */
 
 static const char PAGE[] =
 "<!doctype html><html lang=fr><meta charset=utf-8>"
@@ -178,6 +180,7 @@ static int pin_item(const item_t *it, int on) {
         if (appdb_backup() != 0) { sqlite3_close(db); return -1; }
         g_backed_up = 1;
     }
+    g_watch[it - PINS] = on;
     int changed = appdb_set_system_pin(db, it->title_id, on);
     if (changed >= 0 && appdb_set_lock(db, it->title_id, on) != 0) changed = -1;
     sqlite3_close(db);
@@ -290,8 +293,36 @@ static void local_ip(char *out, size_t n) {
     close(s);
 }
 
+/* The console rewrites a tile's lastAccessIndex when that app is launched, which drops
+ * the lock. While the menu runs, re-apply it as soon as it is lost. */
+static void watch_tick(void) {
+    for (size_t i = 0; i < N_PINS; i++) {
+        if (!g_watch[i]) continue;
+        sqlite3 *db = appdb_open();
+        if (!db) continue;
+        int pinned = 0;
+        if (appdb_system_state(db, PINS[i].title_id, &pinned) && !pinned) {
+            if (!g_backed_up && appdb_backup() == 0) g_backed_up = 1;
+            if (g_backed_up && appdb_set_system_pin(db, PINS[i].title_id, 1) >= 0
+                && appdb_set_lock(db, PINS[i].title_id, 1) == 0)
+                appdb_say("%s: lock re-applied.", PINS[i].label);
+        }
+        sqlite3_close(db);
+    }
+}
+
 int main(void) {
     signal(SIGPIPE, SIG_IGN);
+    {   /* pins already active at start are kept locked */
+        sqlite3 *db = appdb_open();
+        if (db) {
+            for (size_t i = 0; i < N_PINS; i++) {
+                int pinned = 0;
+                if (appdb_system_state(db, PINS[i].title_id, &pinned) && pinned) g_watch[i] = 1;
+            }
+            sqlite3_close(db);
+        }
+    }
 
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) { appdb_say("socket: %s", strerror(errno)); return 1; }
@@ -314,6 +345,13 @@ int main(void) {
     appdb_say("Menu: http://%s:%d/", ip, MENU_PORT);
 
     while (!g_quit) {
+        fd_set rs;
+        FD_ZERO(&rs);
+        FD_SET(srv, &rs);
+        struct timeval wt = {2, 0};
+        int sr = select(srv + 1, &rs, NULL, NULL, &wt);
+        if (sr == 0) { watch_tick(); continue; }
+        if (sr < 0) { if (errno == EINTR) continue; break; }
         int fd = accept(srv, NULL, NULL);
         if (fd < 0) {
             if (errno == EINTR) continue;
