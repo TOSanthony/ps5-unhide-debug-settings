@@ -230,27 +230,23 @@ APPDB_FN int appdb_set_visible(sqlite3 *db, const char *title_id, int value) {
     return err ? -1 : changed;
 }
 
-/* Position of title_id among visible items sharing its dispLocation, ordered by
- * lastAccessIndex (highest = leftmost). Uses the first table that has the title.
- * Returns 1 if found, 0 if not. */
-APPDB_FN int appdb_rank(sqlite3 *db, const char *title_id, int *rank, int *total) {
+/* "System" group of the home screen (PlayStation Store, Game Library, ...). */
+#define APPDB_DISP_SYSTEM 146
+#define APPDB_DISP_GAMES  138
+
+/* 1 if title_id exists (first table that has it); *pinned = in the system group. */
+APPDB_FN int appdb_system_state(sqlite3 *db, const char *title_id, int *pinned) {
     char *names[64];
     int n = appdb_tables(db, names, 64);
     int found = 0;
     for (int i = 0; i < n; i++) {
         if (!found) {
             char *sql = sqlite3_mprintf(
-                "SELECT "
-                " (SELECT COUNT(*) FROM \"%w\" o WHERE o.dispLocation=m.dispLocation AND o.visible<>0"
-                "   AND IFNULL(o.lastAccessIndex,0) > IFNULL(m.lastAccessIndex,0)) + 1,"
-                " (SELECT COUNT(*) FROM \"%w\" o WHERE o.dispLocation=m.dispLocation AND o.visible<>0) "
-                "FROM \"%w\" m WHERE m.titleId=%Q LIMIT 1",
-                names[i], names[i], names[i], title_id);
+                "SELECT dispLocation FROM \"%w\" WHERE titleId=%Q LIMIT 1", names[i], title_id);
             sqlite3_stmt *st = NULL;
             if (sql && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
                 if (sqlite3_step(st) == SQLITE_ROW) {
-                    *rank = sqlite3_column_int(st, 0);
-                    *total = sqlite3_column_int(st, 1);
+                    *pinned = sqlite3_column_int(st, 0) == APPDB_DISP_SYSTEM;
                     found = 1;
                 }
                 sqlite3_finalize(st);
@@ -262,21 +258,30 @@ APPDB_FN int appdb_rank(sqlite3 *db, const char *title_id, int *rank, int *total
     return found;
 }
 
-/* Gives title_id a lastAccessIndex above every other row, in each table where
- * it exists. Returns rows changed, or -1 on error. */
-APPDB_FN int appdb_pin_first(sqlite3 *db, const char *title_id) {
+/* on=1: move title_id into the system group (dispLocation=146, pinnedStatus=2,
+ *       lastAccessIndex just below the lowest one in that group) -> leftmost.
+ * on=0: back to the games row (dispLocation=138, pinnedStatus=NULL, most recent).
+ * Applied in every table where the title exists. Returns rows changed, or -1. */
+APPDB_FN int appdb_set_system_pin(sqlite3 *db, const char *title_id, int on) {
     char *names[64];
     int n = appdb_tables(db, names, 64);
     int changed = 0, err = 0;
     if (n < 0) return -1;
     for (int i = 0; i < n; i++) {
         char *e = NULL;
-        char *sql = sqlite3_mprintf(
-            "UPDATE \"%w\" SET lastAccessIndex="
-            " (SELECT IFNULL(MAX(lastAccessIndex),0)+1 FROM \"%w\" WHERE titleId<>%Q) "
-            "WHERE titleId=%Q AND IFNULL(lastAccessIndex,0) <= "
-            " (SELECT IFNULL(MAX(lastAccessIndex),0) FROM \"%w\" WHERE titleId<>%Q)",
-            names[i], names[i], title_id, title_id, names[i], title_id);
+        char *sql;
+        if (on)
+            sql = sqlite3_mprintf(
+                "UPDATE \"%w\" SET dispLocation=%d, pinnedStatus=2, visible=1, lastAccessIndex="
+                " (SELECT IFNULL(MIN(lastAccessIndex),2)-1 FROM \"%w\""
+                "  WHERE dispLocation=%d AND titleId<>%Q) WHERE titleId=%Q",
+                names[i], APPDB_DISP_SYSTEM, names[i], APPDB_DISP_SYSTEM, title_id, title_id);
+        else
+            sql = sqlite3_mprintf(
+                "UPDATE \"%w\" SET dispLocation=%d, pinnedStatus=NULL, lastAccessIndex="
+                " (SELECT IFNULL(MAX(lastAccessIndex),0)+1 FROM \"%w\" WHERE titleId<>%Q) "
+                "WHERE titleId=%Q",
+                names[i], APPDB_DISP_GAMES, names[i], title_id, title_id);
         if (!sql) { err = 1; }
         else if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &e) != SQLITE_OK) {
             appdb_say("%s: %s", names[i], e ? e : "begin failed"); err = 1;
