@@ -17,7 +17,12 @@ Ouvre-la depuis un téléphone ou un PC du même réseau, utilise les interrupte
 Un interrupteur épingle Orbit Store (`PPSA99177`) comme le PlayStation Store : l'entrée est rangée dans le
 groupe système (`dispLocation=146`, `pinnedStatus=2`, même `primaryTitleSort` que les apps système, sinon la console
 le trie avec les jeux) avec le plus petit `lastAccessIndex` du groupe. En le désactivant, elle retourne dans la rangée des jeux (`dispLocation=138`). Non testé sur console :
-la sauvegarde `/data/app.db.*.bak` permet de revenir en arrière. Bouton « Arrêter le menu » pour libérer le port avant de relancer. Le menu n'a pas de mot de passe :
+la sauvegarde `/data/app.db.*.bak` permet de revenir en arrière. Un second interrupteur, « Orbit Store à la place du PlayStation Store », garde la tuile du Store (que la console
+laisse épinglée à gauche) mais la fait lancer Orbit : `visible=1`, `titleName='Orbit Store'`,
+`deeplinkUri='psgm:play?id=PPSA99177'` sur `NPXS40047`. Les valeurs d'origine sont sauvegardées dans
+`/data/appdb_swap_NPXS40047.orig` et restaurées en désactivant l'interrupteur. Expérimental : la console peut
+ignorer le lien. Désactive l'épinglage d'Orbit ci-dessus pour éviter un doublon.
+Bouton « Arrêter le menu » pour libérer le port avant de relancer. Le menu n'a pas de mot de passe :
 ne le laisse pas tourner sur un réseau que tu ne maîtrises pas. `app.db` est sauvegardé une fois par lancement.
 
 Redémarre la console après l'exécution. Ne les utilise que sur ta propre console.

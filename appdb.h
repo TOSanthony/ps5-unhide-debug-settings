@@ -315,4 +315,167 @@ APPDB_FN int appdb_set_system_pin(sqlite3 *db, const char *title_id, int on) {
     return err ? -1 : changed;
 }
 
+/* ---- "Re-point" a system tile (e.g. the PlayStation Store) to another app ---- */
+
+#define APPDB_SWAP_URI_FMT "psgm:play?id=%s"
+
+APPDB_FN void appdb_swap_sidecar(char *out, size_t n, const char *tile_id) {
+    snprintf(out, n, APPDB_BACKUP_DIR "/appdb_swap_%s.orig", tile_id);
+}
+
+/* *swapped = tile's deeplinkUri already points at target_id. Returns 1 if tile found. */
+APPDB_FN int appdb_swap_state(sqlite3 *db, const char *tile_id, const char *target_id, int *swapped) {
+    char *names[64];
+    int n = appdb_tables(db, names, 64);
+    int found = 0;
+    char uri[128];
+    snprintf(uri, sizeof uri, APPDB_SWAP_URI_FMT, target_id);
+    for (int i = 0; i < n; i++) {
+        if (!found) {
+            char *sql = sqlite3_mprintf(
+                "SELECT IFNULL(deeplinkUri,'')=%Q FROM \"%w\" WHERE titleId=%Q LIMIT 1",
+                uri, names[i], tile_id);
+            sqlite3_stmt *st = NULL;
+            if (sql && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+                if (sqlite3_step(st) == SQLITE_ROW) {
+                    *swapped = sqlite3_column_int(st, 0);
+                    found = 1;
+                }
+                sqlite3_finalize(st);
+            }
+            sqlite3_free(sql);
+        }
+        free(names[i]);
+    }
+    return found;
+}
+
+/* Saves "table<TAB>titleName<TAB>deeplinkUri<TAB>visible" for every row of tile_id. */
+APPDB_FN int appdb_swap_save_original(sqlite3 *db, const char *tile_id, const char *path) {
+    char *names[64];
+    int n = appdb_tables(db, names, 64);
+    FILE *f = fopen(path, "w");
+    if (!f) { for (int i = 0; i < n; i++) free(names[i]); return -1; }
+    for (int i = 0; i < n; i++) {
+        char *sql = sqlite3_mprintf(
+            "SELECT titleName, deeplinkUri, visible FROM \"%w\" WHERE titleId=%Q",
+            names[i], tile_id);
+        sqlite3_stmt *st = NULL;
+        if (sql && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+            while (sqlite3_step(st) == SQLITE_ROW) {
+                const char *nm = (const char *)sqlite3_column_text(st, 0);
+                const char *ur = (const char *)sqlite3_column_text(st, 1);
+                char cleaned[256];
+                snprintf(cleaned, sizeof cleaned, "%s", nm ? nm : "");
+                for (char *c = cleaned; *c; c++) if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
+                fprintf(f, "%s\t%s\t%s\t%d\n", names[i], cleaned,
+                        ur ? ur : "\\N", sqlite3_column_int(st, 2));
+            }
+            sqlite3_finalize(st);
+        }
+        sqlite3_free(sql);
+        free(names[i]);
+    }
+    int rc = (fflush(f) == 0 && fsync(fileno(f)) == 0) ? 0 : -1;
+    if (fclose(f) != 0) rc = -1;
+    return rc;
+}
+
+/* on=1: tile gets visible=1, titleName=new_name, deeplinkUri=psgm:play?id=<target_id>
+ *       (originals are saved first so they can be restored).
+ * on=0: originals restored from the saved file (fallback: name fallback_name, no deeplink).
+ * Returns rows changed, or -1. */
+APPDB_FN int appdb_swap_tile(sqlite3 *db, const char *tile_id, const char *target_id,
+                             const char *new_name, const char *fallback_name, int on) {
+    char path[256], uri[128];
+    appdb_swap_sidecar(path, sizeof path, tile_id);
+    snprintf(uri, sizeof uri, APPDB_SWAP_URI_FMT, target_id);
+    int changed = 0, err = 0;
+
+    if (on) {
+        int swapped = 0;
+        appdb_swap_state(db, tile_id, target_id, &swapped);
+        if (!swapped && appdb_swap_save_original(db, tile_id, path) != 0) {
+            appdb_say("Cannot save original tile data to %s: %s", path, strerror(errno));
+            return -1;
+        }
+        char *names[64];
+        int n = appdb_tables(db, names, 64);
+        for (int i = 0; i < n; i++) {
+            char *e = NULL;
+            char *sql = sqlite3_mprintf(
+                "UPDATE \"%w\" SET visible=1, titleName=%Q, deeplinkUri=%Q WHERE titleId=%Q",
+                names[i], new_name, uri, tile_id);
+            if (!sql) err = 1;
+            else if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &e) != SQLITE_OK) { err = 1; }
+            else if (sqlite3_exec(db, sql, NULL, NULL, &e) != SQLITE_OK) {
+                sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL); err = 1;
+            } else {
+                int c = sqlite3_changes(db);
+                if (sqlite3_exec(db, "COMMIT", NULL, NULL, &e) != SQLITE_OK) err = 1;
+                else changed += c;
+            }
+            if (err && e) appdb_say("%s: %s", names[i], e);
+            sqlite3_free(e);
+            sqlite3_free(sql);
+            free(names[i]);
+        }
+        return err ? -1 : changed;
+    }
+
+    /* restore */
+    FILE *f = fopen(path, "r");
+    int restored_any = 0;
+    if (f) {
+        char line[1024];
+        while (fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\r\n")] = 0;
+            char *fld[4];
+            int k = 0;
+            for (char *p = line; k < 4; ) {
+                fld[k++] = p;
+                char *t = strchr(p, '\t');
+                if (!t) break;
+                *t = 0;
+                p = t + 1;
+            }
+            if (k != 4) continue;
+            const char *u = strcmp(fld[2], "\\N") ? fld[2] : NULL;
+            char *e = NULL;
+            char *sql = sqlite3_mprintf(
+                "UPDATE \"%w\" SET titleName=%Q, deeplinkUri=%Q, visible=%d WHERE titleId=%Q",
+                fld[0], fld[1], u, atoi(fld[3]), tile_id);
+            if (sql && sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &e) == SQLITE_OK) {
+                if (sqlite3_exec(db, sql, NULL, NULL, &e) == SQLITE_OK) {
+                    int c = sqlite3_changes(db);
+                    if (sqlite3_exec(db, "COMMIT", NULL, NULL, &e) == SQLITE_OK) {
+                        changed += c; restored_any = 1;
+                    } else err = 1;
+                } else { sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL); err = 1; }
+            } else err = 1;
+            if (err && e) appdb_say("restore: %s", e);
+            sqlite3_free(e);
+            sqlite3_free(sql);
+        }
+        fclose(f);
+    }
+    if (!restored_any && !err) {
+        char *names[64];
+        int n = appdb_tables(db, names, 64);
+        for (int i = 0; i < n; i++) {
+            char *e = NULL;
+            char *sql = sqlite3_mprintf(
+                "UPDATE \"%w\" SET titleName=%Q, deeplinkUri=NULL WHERE titleId=%Q",
+                names[i], fallback_name, tile_id);
+            if (sql && sqlite3_exec(db, sql, NULL, NULL, &e) == SQLITE_OK)
+                changed += sqlite3_changes(db);
+            else err = 1;
+            sqlite3_free(e);
+            sqlite3_free(sql);
+            free(names[i]);
+        }
+    }
+    return err ? -1 : changed;
+}
+
 #endif /* APPDB_H */
