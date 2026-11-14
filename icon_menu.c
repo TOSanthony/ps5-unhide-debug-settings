@@ -179,10 +179,11 @@ static int pin_item(const item_t *it, int on) {
         g_backed_up = 1;
     }
     int changed = appdb_set_system_pin(db, it->title_id, on);
+    if (changed >= 0 && appdb_set_lock(db, it->title_id, on) != 0) changed = -1;
     sqlite3_close(db);
     if (changed >= 0)
         appdb_say("%s: %s (%d row(s)). Reboot to apply.", it->label,
-                  on ? "PINNED (system group)" : "UNPINNED (games row)", changed);
+                  on ? "PINNED + LOCKED (system group, index 1e9)" : "UNPINNED (games row)", changed);
     return changed;
 }
 

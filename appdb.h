@@ -233,6 +233,12 @@ APPDB_FN int appdb_set_visible(sqlite3 *db, const char *title_id, int value) {
 /* "System" group of the home screen (PlayStation Store, Game Library, ...). */
 #define APPDB_DISP_SYSTEM 146
 #define APPDB_DISP_GAMES  138
+/* "Lock order" (same idea as PSGFX): the shell sorts tiles by lastAccessIndex / time,
+ * and a launched game gets counter+1 from tbl_version. A tile given an index far above
+ * the counter and a date in 2099 therefore stays in front forever. tbl_version is NOT
+ * touched. */
+#define APPDB_LOCK_INDEX 1000000000
+#define APPDB_LOCK_TIME  "2099-12-31 12:00:00.000"
 
 /* 1 if title_id exists (first table that has it); *pinned = in the system group. */
 APPDB_FN int appdb_system_state(sqlite3 *db, const char *title_id, int *pinned) {
@@ -243,14 +249,16 @@ APPDB_FN int appdb_system_state(sqlite3 *db, const char *title_id, int *pinned) 
         if (!found) {
             char *sql = sqlite3_mprintf(
                 "SELECT dispLocation, primaryTitleSort = IFNULL((SELECT primaryTitleSort FROM \"%w\""
-                " WHERE dispLocation=%d AND titleId LIKE 'NPXS%%' LIMIT 1), -1) "
+                " WHERE dispLocation=%d AND titleId LIKE 'NPXS%%' LIMIT 1), -1),"
+                " IFNULL(lastAccessIndex,0) >= %d "
                 "FROM \"%w\" WHERE titleId=%Q LIMIT 1",
-                names[i], APPDB_DISP_SYSTEM, names[i], title_id);
+                names[i], APPDB_DISP_SYSTEM, APPDB_LOCK_INDEX, names[i], title_id);
             sqlite3_stmt *st = NULL;
             if (sql && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
                 if (sqlite3_step(st) == SQLITE_ROW) {
                     *pinned = sqlite3_column_int(st, 0) == APPDB_DISP_SYSTEM
-                              && sqlite3_column_int(st, 1) == 1;
+                              && sqlite3_column_int(st, 1) == 1
+                              && sqlite3_column_int(st, 2) == 1;
                     found = 1;
                 }
                 sqlite3_finalize(st);
@@ -260,6 +268,100 @@ APPDB_FN int appdb_system_state(sqlite3 *db, const char *title_id, int *pinned) 
         free(names[i]);
     }
     return found;
+}
+
+
+/* Every column of `table` among `cols` (NULL-terminated) that exists, as "a=X, b=X". */
+static int appdb_col_exists(sqlite3 *db, const char *table, const char *col) {
+    char *sql = sqlite3_mprintf("SELECT 1 FROM pragma_table_info(%Q) WHERE name=%Q", table, col);
+    sqlite3_stmt *st = NULL;
+    int ok = 0;
+    if (sql && sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
+        ok = sqlite3_step(st) == SQLITE_ROW;
+        sqlite3_finalize(st);
+    }
+    sqlite3_free(sql);
+    return ok;
+}
+
+/* Sets the recency fields of one row (table.key = val). lock=1: index 1e9 and a 2099
+ * date; lock=0: back to the current tbl_version counter and the current time. Columns
+ * that are NULL for the played-only fields stay NULL. */
+static int appdb_recency(sqlite3 *db, const char *table, const char *key, const char *val, int lock) {
+    static const char *always[] = {"lastAccessTime", "recentActivityDatePlayedOrInstalled",
+                                   "lastInteractedTime", NULL};
+    static const char *played[] = {"lastPlayedDate", "lastPlayedDateOnConsole",
+                                   "recentActivityDatePlayedOrPurchased", NULL};
+    char *set = sqlite3_mprintf("%s", "");
+    const char *when = lock ? "'" APPDB_LOCK_TIME "'" : "strftime('%Y-%m-%d %H:%M:%f','now')";
+    char idx[96];
+    if (lock) snprintf(idx, sizeof idx, "%d", APPDB_LOCK_INDEX);
+    else snprintf(idx, sizeof idx, "IFNULL((SELECT status FROM tbl_version WHERE category='access_index'),1)");
+    if (appdb_col_exists(db, table, "lastAccessIndex")) {
+        char *t = sqlite3_mprintf("%z%slastAccessIndex=%s", set, *set ? ", " : "", idx); set = t;
+    }
+    if (appdb_col_exists(db, table, "lastPlayedIndex")) {
+        char *t = sqlite3_mprintf("%z%slastPlayedIndex=CASE WHEN lastPlayedIndex IS NULL THEN NULL ELSE %s END",
+                                  set, *set ? ", " : "", idx); set = t;
+    }
+    for (int i = 0; always[i]; i++)
+        if (appdb_col_exists(db, table, always[i])) {
+            char *t = sqlite3_mprintf("%z%s\"%w\"=%s", set, *set ? ", " : "", always[i], when); set = t;
+        }
+    for (int i = 0; played[i]; i++)
+        if (appdb_col_exists(db, table, played[i])) {
+            char *t = sqlite3_mprintf("%z%s\"%w\"=CASE WHEN \"%w\" IS NULL THEN NULL ELSE %s END",
+                                      set, *set ? ", " : "", played[i], played[i], when); set = t;
+        }
+    int rc = 0;
+    if (*set) {
+        char *sql = sqlite3_mprintf("UPDATE \"%w\" SET %s WHERE \"%w\"=%Q", table, set, key, val), *e = NULL;
+        if (!sql || sqlite3_exec(db, sql, NULL, NULL, &e) != SQLITE_OK) {
+            appdb_say("%s: %s", table, e ? e : "recency failed"); rc = -1;
+        }
+        sqlite3_free(e); sqlite3_free(sql);
+    }
+    sqlite3_free(set);
+    return rc;
+}
+
+/* Lock / unlock the order of title_id in all tables (icon info per profile, concept info
+ * per profile, tbl_contentinfo, tbl_conceptmetadata). Returns 0 or -1. */
+APPDB_FN int appdb_set_lock(sqlite3 *db, const char *title_id, int lock) {
+    char *names[64];
+    int n = appdb_tables(db, names, 64), err = 0;
+    if (n < 0) return -1;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) != SQLITE_OK) {
+        for (int i = 0; i < n; i++) free(names[i]);
+        return -1;
+    }
+    for (int i = 0; i < n; i++) {
+        char *concept = NULL;
+        char *q = sqlite3_mprintf("SELECT localConceptId FROM \"%w\" WHERE titleId=%Q LIMIT 1", names[i], title_id);
+        sqlite3_stmt *st = NULL;
+        if (q && sqlite3_prepare_v2(db, q, -1, &st, NULL) == SQLITE_OK) {
+            if (sqlite3_step(st) == SQLITE_ROW && sqlite3_column_text(st, 0))
+                concept = sqlite3_mprintf("%s", (const char *)sqlite3_column_text(st, 0));
+            sqlite3_finalize(st);
+        }
+        sqlite3_free(q);
+        if (appdb_recency(db, names[i], "titleId", title_id, lock)) err = 1;
+        if (concept) {
+            const char *suffix = names[i] + strlen("tbl_iconinfo_");
+            char *ct = sqlite3_mprintf("tbl_concepticoninfo_%s", suffix);
+            if (ct && appdb_col_exists(db, ct, "localConceptId"))
+                if (appdb_recency(db, ct, "localConceptId", concept, lock)) err = 1;
+            sqlite3_free(ct);
+            if (i == 0 && appdb_col_exists(db, "tbl_conceptmetadata", "localConceptId"))
+                if (appdb_recency(db, "tbl_conceptmetadata", "localConceptId", concept, lock)) err = 1;
+        }
+        sqlite3_free(concept);
+        free(names[i]);
+    }
+    if (appdb_col_exists(db, "tbl_contentinfo", "titleId"))
+        if (appdb_recency(db, "tbl_contentinfo", "titleId", title_id, lock)) err = 1;
+    if (sqlite3_exec(db, err ? "ROLLBACK" : "COMMIT", NULL, NULL, NULL) != SQLITE_OK) err = 1;
+    return err ? -1 : 0;
 }
 
 /* on=1: move title_id into the system group: dispLocation=146, pinnedStatus=2, the
