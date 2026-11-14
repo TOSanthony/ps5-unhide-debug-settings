@@ -5,6 +5,7 @@
  *   - PlayStation Store (NPXS40047)
  *   - Welcome Hub       (NPXS40063)
  *   - PlayStation Plus  (NPXS40037)
+ * and a button to pin Orbit Store (PPSA99177) first in its home-screen row.
  *
  * Launch the ELF, then open  http://<IP de la PS5>:8095/  from a phone or PC
  * on the same network (the IP is shown in a notification and on stdout).
@@ -33,6 +34,12 @@ static const item_t ITEMS[] = {
 };
 #define N_ITEMS (sizeof ITEMS / sizeof ITEMS[0])
 
+/* Apps that can be pinned to the first position of their home-screen row. */
+static const item_t PINS[] = {
+    {"orbit", "PPSA99177", "Orbit Store"},
+};
+#define N_PINS (sizeof PINS / sizeof PINS[0])
+
 static int g_backed_up = 0;
 static int g_quit = 0;
 
@@ -46,6 +53,7 @@ static const char PAGE[] =
 "border-radius:12px;padding:16px;margin:12px 0}.row small{display:block;color:#8a93ad;margin-top:4px}"
 ".sw{position:relative;width:52px;height:30px;flex:none}.sw input{opacity:0;width:0;height:0}"
 ".sl{position:absolute;inset:0;background:#3a435c;border-radius:30px;transition:.2s;cursor:pointer}"
+".row button{margin:0}button:disabled{opacity:.4}"
 ".sl:before{content:'';position:absolute;width:24px;height:24px;left:3px;top:3px;background:#fff;"
 "border-radius:50%;transition:.2s}input:checked+.sl{background:#2f7cf6}"
 "input:checked+.sl:before{transform:translateX(22px)}input:disabled+.sl{opacity:.4;cursor:not-allowed}"
@@ -60,7 +68,15 @@ static const char PAGE[] =
 "d.innerHTML='<div>'+i.label+'<small>'+(i.found?i.title_id:'introuvable dans app.db')+'</small></div>"
 "<label class=sw><input type=checkbox '+(i.visible?'checked ':'')+(i.found?'':'disabled ')+"
 "'><span class=sl></span></label>';"
-"d.querySelector('input').onchange=e=>set(i.id,e.target.checked);l.appendChild(d)}}"
+"d.querySelector('input').onchange=e=>set(i.id,e.target.checked);l.appendChild(d)}"
+"for(const p of s.pins){const d=document.createElement('div');d.className='row';"
+"d.innerHTML='<div>'+p.label+'<small>'+(p.found?('Position '+p.rank+' sur '+p.total+' dans sa rangée'):'introuvable dans app.db')+'</small></div>"
+"<button '+(p.found&&p.rank>1?'':'disabled ')+'>Épingler en tête</button>';"
+"d.querySelector('button').onclick=()=>pin(p.id);l.appendChild(d)}}"
+"async function pin(id){const m=document.getElementById('msg');"
+"const r=await fetch('/api/pin?id='+id,{method:'POST',headers:H});"
+"m.textContent=r.ok?'Épinglé en tête. Redémarre la PS5 pour appliquer.':'Erreur ('+r.status+')';"
+"m.style.color=r.ok?'#8fd19e':'#ff8a8a';load()}"
 "async function set(id,v){const m=document.getElementById('msg');"
 "const r=await fetch('/api/set?id='+id+'&v='+(v?1:0),{method:'POST',headers:H});"
 "m.textContent=r.ok?'Enregistré. Redémarre la PS5 pour appliquer.':'Erreur ('+r.status+')';"
@@ -110,6 +126,14 @@ static void state_json(char *out, size_t cap) {
             i ? "," : "", ITEMS[i].id, ITEMS[i].title_id, ITEMS[i].label,
             total > 0 ? "true" : "false", vis > 0 ? "true" : "false");
     }
+    off += (size_t)snprintf(out + off, cap - off, "],\"pins\":[");
+    for (size_t i = 0; i < N_PINS; i++) {
+        int rank = 0, total = 0;
+        int found = db ? appdb_rank(db, PINS[i].title_id, &rank, &total) : 0;
+        off += (size_t)snprintf(out + off, cap - off,
+            "%s{\"id\":\"%s\",\"label\":\"%s\",\"found\":%s,\"rank\":%d,\"total\":%d}",
+            i ? "," : "", PINS[i].id, PINS[i].label, found ? "true" : "false", rank, total);
+    }
     snprintf(out + off, cap - off, "]}");
     if (db) sqlite3_close(db);
 }
@@ -131,6 +155,28 @@ static int set_item(const item_t *it, int value) {
     if (changed >= 0)
         appdb_say("%s: %s (%d row(s)). Reboot to apply.", it->label,
                   value ? "SHOWN" : "HIDDEN", changed);
+    return changed;
+}
+
+static const item_t *find_pin(const char *id) {
+    for (size_t i = 0; i < N_PINS; i++)
+        if (!strcmp(PINS[i].id, id)) return &PINS[i];
+    return NULL;
+}
+
+static int pin_item(const item_t *it) {
+    sqlite3 *db = appdb_open();
+    if (!db) return -1;
+    int rank = 0, total = 0;
+    if (!appdb_rank(db, it->title_id, &rank, &total)) { sqlite3_close(db); return -1; }
+    if (!g_backed_up) {
+        if (appdb_backup() != 0) { sqlite3_close(db); return -1; }
+        g_backed_up = 1;
+    }
+    int changed = appdb_pin_first(db, it->title_id);
+    sqlite3_close(db);
+    if (changed >= 0)
+        appdb_say("%s: pinned first (%d row(s)). Reboot to apply.", it->label, changed);
     return changed;
 }
 
@@ -183,7 +229,7 @@ static void handle(int fd) {
     if (!strcmp(method, "GET") && !strcmp(target, "/")) {
         reply(fd, 200, "text/html; charset=utf-8", PAGE);
     } else if (!strcmp(method, "GET") && !strcmp(target, "/api/state")) {
-        char json[2048];
+        char json[3072];
         state_json(json, sizeof json);
         reply(fd, 200, "application/json", json);
     } else if (!strcmp(method, "POST")) {
@@ -201,6 +247,13 @@ static void handle(int fd) {
                 reply(fd, 500, "text/plain", "failed");
             else
                 reply(fd, 200, "application/json", "{\"ok\":true}");
+        } else if (!strcmp(target, "/api/pin")) {
+            char id[16];
+            query_get(query ? query : "", "id", id, sizeof id);
+            const item_t *it = find_pin(id);
+            if (!it) reply(fd, 400, "text/plain", "bad params");
+            else if (pin_item(it) < 0) reply(fd, 500, "text/plain", "failed");
+            else reply(fd, 200, "application/json", "{\"ok\":true}");
         } else if (!strcmp(target, "/api/quit")) {
             reply(fd, 200, "application/json", "{\"ok\":true}");
             g_quit = 1;
