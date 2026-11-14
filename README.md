@@ -1,16 +1,21 @@
 # ps5-unhide-debug-settings
 
-Payload PS5 (ps5-payload-sdk) qui :
+Payloads PS5 (ps5-payload-sdk) qui modifient l'affichage des icônes de l'écran d'accueil via
+`/system_data/priv/mms/app.db` (tables `tbl_iconinfo*`). Avant chaque modification,
+l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 
-1. sauvegarde `/system_data/priv/mms/app.db` dans `/data/app.db.<timestamp>.bak` ;
-2. met `visible=1` pour `titleId = NPXS40063` dans les tables `tbl_iconinfo*`.
+| Payload | Effet |
+|---|---|
+| `welcome_hub.elf` | met `visible=1` pour `NPXS40063` (Welcome Hub) |
+| `toggle_store.elf` | **bascule** l'icône PlayStation Store (`NPXS40047`) : la cache si elle est visible, la réaffiche si elle est cachée |
 
-Redémarre la console après l'exécution. Ne l'utilise que sur ta propre console.
+Redémarre la console après l'exécution. Ne les utilise que sur ta propre console.
+Code commun (sauvegarde, accès SQLite) : `appdb.h`.
 
 ## Build via GitHub Actions
 
-- Chaque push sur `main` compile `unhide_debug.elf` : récupère-le dans l'onglet **Actions → build → Artifacts**.
-- Pour publier une release : `git tag v1.0.0 && git push origin v1.0.0` (l'ELF est joint à la release).
+- Chaque push sur `main` compile les ELF : onglet **Actions → build → Artifacts**, ou release `latest`.
+- Release versionnée : `git tag v1.0.0 && git push origin v1.0.0`.
 
 ## Build local
 

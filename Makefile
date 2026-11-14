@@ -5,15 +5,21 @@ else
 endif
 
 # Needs sqlite3.c + sqlite3.h (SQLite "amalgamation") in this folder.
-ELF := unhide_debug.elf
+ELFS := welcome_hub.elf toggle_store.elf
 CFLAGS := -O2 -Wall -I. \
 	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
 	-DSQLITE_OMIT_SHARED_CACHE -DSQLITE_TEMP_STORE=3
 
-all: $(ELF)
+all: $(ELFS)
 
-$(ELF): main.c sqlite3.c
-	$(CC) $(CFLAGS) -o $@ $^
+sqlite3.o: sqlite3.c
+	$(CC) $(CFLAGS) -c -o $@ sqlite3.c
+
+welcome_hub.elf: welcome_hub.c appdb.h sqlite3.o
+	$(CC) $(CFLAGS) -o $@ welcome_hub.c sqlite3.o
+
+toggle_store.elf: toggle_store.c appdb.h sqlite3.o
+	$(CC) $(CFLAGS) -o $@ toggle_store.c sqlite3.o
 
 clean:
-	rm -f $(ELF)
+	rm -f $(ELFS) sqlite3.o

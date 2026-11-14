@@ -41,14 +41,15 @@ jobs:
         run: make
 
       - name: Checksum
-        run: sha256sum welcome_hub.elf | tee welcome_hub.elf.sha256
+        run: sha256sum welcome_hub.elf toggle_store.elf | tee payloads.sha256
 
       - uses: actions/upload-artifact@v4
         with:
-          name: welcome_hub
+          name: payloads
           path: |
             welcome_hub.elf
-            welcome_hub.elf.sha256
+            toggle_store.elf
+            payloads.sha256
 
   release:
     if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
@@ -61,7 +62,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          name: welcome_hub
+          name: payloads
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -72,7 +73,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
-              welcome_hub.elf welcome_hub.elf.sha256
+              welcome_hub.elf toggle_store.elf payloads.sha256
           else
             # Push sur main -> release "latest" recréée à chaque fois
             gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
@@ -82,5 +83,5 @@ jobs:
               --prerelease \
               --title "Latest build (${GITHUB_SHA::7})" \
               --notes "Build automatique du commit $GITHUB_SHA" \
-              welcome_hub.elf welcome_hub.elf.sha256
+              welcome_hub.elf toggle_store.elf payloads.sha256
           fi
