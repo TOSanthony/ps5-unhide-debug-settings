@@ -86,35 +86,35 @@ static void hexdump_line(char *out, size_t cap, const uint8_t *p, int n) {
 }
 
 /* Reads up to SCAN_MAX bytes starting at `base` from `pid`'s address space into a
- * malloc'd buffer. The very first page(s) of an .sprx mapping are often a non-readable
- * header/guard region before the actual code segment, so a single failed pt_copyout
- * does NOT stop the scan: that page is zero-filled (zeros can't match the signature,
- * whose first byte is 0xe8) and the scan keeps going. Only MAX_CONSEC_FAIL pages in a
- * row -- i.e. a real stretch of unmapped memory, such as running off the end of the
- * module -- ends the scan. Never crashes the target: a failed pt_copyout just skips
- * that page. */
-#define MAX_CONSEC_FAIL 64
+ * malloc'd buffer. A failed pt_copyout page is zero-filled (zeros can't match the
+ * signature, whose first byte is 0xe8) and never crashes the target -- it just skips
+ * that page. Unlike the previous version, this one does NOT bail out after a run of
+ * unreadable pages: it always scans the full SCAN_MAX window, because a readable
+ * segment (.rodata/.data) can follow a long unreadable one (.text) further in, and
+ * stopping early would miss it. It logs each contiguous readable/unreadable run so the
+ * memory layout is visible (e.g. "ok 0x0-0x18000, fail 0x18000-0x73000, ok 0x73000-..."). */
 static uint8_t *read_module(pid_t pid, intptr_t base, size_t *out_len) {
     uint8_t *buf = calloc(1, SCAN_MAX);
-    *out_len = 0;
+    *out_len = SCAN_MAX;
     if (!buf) return NULL;
-    size_t off = 0;
-    int consec_fail = 0;
-    int pages_ok = 0;
-    while (off + SCAN_CHUNK <= SCAN_MAX) {
-        if (pt_copyout(pid, base + (intptr_t)off, buf + off, SCAN_CHUNK) != 0) {
-            consec_fail++;
-            if (consec_fail >= MAX_CONSEC_FAIL && pages_ok > 0)
-                break; /* a real run of unmapped pages: end of the module */
-        } else {
-            consec_fail = 0;
-            pages_ok++;
+
+    int run_ok = -1;    /* -1 = no run started yet; else 0/1 for the kind of current run */
+    size_t run_start = 0;
+    size_t total_ok = 0, total_fail = 0;
+
+    for (size_t off = 0; off + SCAN_CHUNK <= SCAN_MAX; off += SCAN_CHUNK) {
+        int ok = (pt_copyout(pid, base + (intptr_t)off, buf + off, SCAN_CHUNK) == 0);
+        if (ok) total_ok++; else total_fail++;
+        if (run_ok == -1) { run_ok = ok; run_start = off; }
+        else if (ok != run_ok) {
+            say("  %s 0x%zx-0x%zx", run_ok ? "ok  " : "fail", run_start, off);
+            run_ok = ok; run_start = off;
         }
-        off += SCAN_CHUNK;
     }
-    *out_len = off;
-    say("  page scan: %d page(s) read ok, stopped after %d consecutive unreadable page(s)",
-        pages_ok, consec_fail);
+    if (run_ok != -1)
+        say("  %s 0x%zx-0x%zx", run_ok ? "ok  " : "fail", run_start, (size_t)SCAN_MAX);
+    say("  totals: %zu page(s) ok, %zu page(s) unreadable, out of %zu scanned",
+        total_ok, total_fail, total_ok + total_fail);
     return buf;
 }
 
@@ -139,7 +139,6 @@ static void scan_pad_module(pid_t pid) {
         say("  malloc failed, skipping scan");
         return;
     }
-    say("  read %zu bytes (0x%zx) before hitting an unmapped page", len, len);
 
     int hits = 0;
     for (size_t off = 0; off + (size_t)PATTERN_LEN <= len; off++) {
