@@ -86,20 +86,35 @@ static void hexdump_line(char *out, size_t cap, const uint8_t *p, int n) {
 }
 
 /* Reads up to SCAN_MAX bytes starting at `base` from `pid`'s address space into a
- * malloc'd buffer, stopping at the first page it can't read (unmapped / end of module).
- * Returns the buffer (caller frees) and sets *out_len. Never crashes the target: a
- * failed pt_copyout just ends the scan early. */
+ * malloc'd buffer. The very first page(s) of an .sprx mapping are often a non-readable
+ * header/guard region before the actual code segment, so a single failed pt_copyout
+ * does NOT stop the scan: that page is zero-filled (zeros can't match the signature,
+ * whose first byte is 0xe8) and the scan keeps going. Only MAX_CONSEC_FAIL pages in a
+ * row -- i.e. a real stretch of unmapped memory, such as running off the end of the
+ * module -- ends the scan. Never crashes the target: a failed pt_copyout just skips
+ * that page. */
+#define MAX_CONSEC_FAIL 64
 static uint8_t *read_module(pid_t pid, intptr_t base, size_t *out_len) {
-    uint8_t *buf = malloc(SCAN_MAX);
+    uint8_t *buf = calloc(1, SCAN_MAX);
     *out_len = 0;
     if (!buf) return NULL;
     size_t off = 0;
+    int consec_fail = 0;
+    int pages_ok = 0;
     while (off + SCAN_CHUNK <= SCAN_MAX) {
-        if (pt_copyout(pid, base + (intptr_t)off, buf + off, SCAN_CHUNK) != 0)
-            break; /* unmapped page: normal end of the module's mapping */
+        if (pt_copyout(pid, base + (intptr_t)off, buf + off, SCAN_CHUNK) != 0) {
+            consec_fail++;
+            if (consec_fail >= MAX_CONSEC_FAIL && pages_ok > 0)
+                break; /* a real run of unmapped pages: end of the module */
+        } else {
+            consec_fail = 0;
+            pages_ok++;
+        }
         off += SCAN_CHUNK;
     }
     *out_len = off;
+    say("  page scan: %d page(s) read ok, stopped after %d consecutive unreadable page(s)",
+        pages_ok, consec_fail);
     return buf;
 }
 
