@@ -63,16 +63,16 @@ static void probe(void) {
     r = scePadInit();
     say("scePadInit: 0x%x", (unsigned)r);
 
-    int users[5] = {ids[0], ids[1], ids[2], ids[3], init};
-    for (int u = 0; u < 5; u++) {
-        if (users[u] <= 0) continue;
+    /* real users, then the "system" pseudo users some system components use */
+    int users[6] = {ids[0], ids[1], 255, 254, 0, 1};
+    for (int u = 0; u < 6; u++) {
+        if (users[u] < 0) continue;
+        for (int type = 0; type < 3; type++)
         for (int idx = 0; idx < 2; idx++) {
-            int h = scePadGetHandle(users[u], 0, idx);
-            say("user %d index %d: scePadGetHandle=0x%x", users[u], idx, (unsigned)h);
-            if (h < 0) {
-                h = scePadOpen(users[u], 0, idx, NULL);
-                say("user %d index %d: scePadOpen=0x%x", users[u], idx, (unsigned)h);
-            }
+            int h = scePadGetHandle(users[u], type, idx);
+            int o = scePadOpen(users[u], type, idx, NULL);
+            say("user %d type %d index %d: GetHandle=0x%x Open=0x%x", users[u], type, idx, (unsigned)h, (unsigned)o);
+            if (h < 0) h = o;
             if (h < 0) continue;
             static unsigned char info[256], data[512];
             memset(info, 0, sizeof info);
