@@ -14,6 +14,7 @@ l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 
 Lance l'ELF : une notification et la sortie standard affichent l'adresse `http://<IP de la PS5>:8095/`.
 Ouvre-la depuis un téléphone ou un PC du même réseau, utilise les interrupteurs, puis redémarre la console.
+Au lancement, `icon_menu.elf` applique les réglages de base : PlayStation Plus, PlayStation Store et Welcome Hub masqués, Orbit Store épinglé et verrouillé à gauche (seules les lignes qui diffèrent sont modifiées, avec sauvegarde). Les interrupteurs restent utilisables ensuite.
 Un interrupteur épingle Orbit Store (`PPSA99177`) comme le PlayStation Store : l'entrée est rangée dans le
 groupe système (`dispLocation=146`, `pinnedStatus=2`, même `primaryTitleSort` que les apps système, sinon la console
 le trie avec les jeux) et il est **verrouillé** comme avec « Lock order » de [PSGFX](https://github.com/elripalda/psgfx) (GPL-3.0) : `lastAccessIndex`/`lastPlayedIndex` à 1 000 000 000 et dates en 2099 dans `tbl_iconinfo_*`, `tbl_concepticoninfo_*`, `tbl_contentinfo` et `tbl_conceptmetadata`, sans toucher au compteur `tbl_version`, donc un jeu lancé ensuite ne passe plus devant. Comme la console réécrit l'index d'une app quand on la lance (ce qui casse le verrou), le menu, tant qu'il tourne, vérifie toutes les 2 s et remet le verrou. Il faut donc laisser `icon_menu.elf` lancé (sans « Arrêter le menu »). En le désactivant, elle retourne dans la rangée des jeux (`dispLocation=138`). Non testé sur console :

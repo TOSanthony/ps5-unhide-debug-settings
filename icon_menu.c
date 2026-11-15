@@ -10,6 +10,9 @@
  *
  * Launch the ELF, then open  http://<IP de la PS5>:8095/  from a phone or PC
  * on the same network (the IP is shown in a notification and on stdout).
+ * At launch the default settings are applied: PlayStation Plus, PlayStation Store and
+ * Welcome Hub hidden, Orbit Store pinned and locked on the left (the menu then keeps the
+ * lock while it runs). The switches can still be changed afterwards.
  * app.db is backed up once, before the first change of each run.
  * Reboot the console after changing switches.
  */
@@ -190,6 +193,33 @@ static int pin_item(const item_t *it, int on) {
     return changed;
 }
 
+/* Default settings applied at every launch: hide PlayStation Plus, PlayStation Store
+ * (the tile that leads to the PSN sign-in) and Welcome Hub; keep Orbit Store pinned and
+ * locked on the left. Only rows that differ are touched. */
+static void apply_defaults(void) {
+    sqlite3 *db = appdb_open();
+    if (!db) return;
+    int to_hide[N_ITEMS], n_hide = 0, need_pin = 0;
+    for (size_t i = 0; i < N_ITEMS; i++) {
+        int total = 0, vis = 0;
+        to_hide[i] = 0;
+        if (appdb_count(db, ITEMS[i].title_id, &total, &vis) == 0 && total > 0 && vis > 0) {
+            to_hide[i] = 1;
+            n_hide++;
+        }
+    }
+    for (size_t i = 0; i < N_PINS; i++) {
+        int pinned = 0;
+        if (appdb_system_state(db, PINS[i].title_id, &pinned) && !pinned) need_pin = 1;
+    }
+    sqlite3_close(db);
+    if (!n_hide && !need_pin) { appdb_say("Default settings already in place."); return; }
+    for (size_t i = 0; i < N_ITEMS; i++)
+        if (to_hide[i]) set_item(&ITEMS[i], 0);
+    for (size_t i = 0; i < N_PINS; i++) pin_item(&PINS[i], 1);
+    appdb_say("Default settings applied. Reboot to apply.");
+}
+
 /* Value of query parameter `key` in `query` into out (empty if absent). */
 static void query_get(const char *query, const char *key, char *out, size_t n) {
     size_t kl = strlen(key);
@@ -343,6 +373,7 @@ int main(void) {
     char ip[64];
     local_ip(ip, sizeof ip);
     appdb_say("Menu: http://%s:%d/", ip, MENU_PORT);
+    apply_defaults();
 
     while (!g_quit) {
         fd_set rs;
