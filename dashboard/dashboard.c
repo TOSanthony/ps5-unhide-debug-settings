@@ -23,6 +23,7 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/statvfs.h>
+#include <stdint.h>
 #include <unistd.h>
 
 #include "appdb.h"
@@ -67,6 +68,78 @@ static int backup_once(void) {
  * NiDUS is already running on the console. Failures here are non-fatal: the tile
  * visibility change in app.db still goes through either way.
  */
+/*
+ * Self-extracting launcher: if the user glued an extra ELF (e.g. the NiDUS bridge
+ * payload they already run manually) onto the end of THIS dashboard.elf file, pull
+ * it back out to disk and run it once at startup. Format (last 16 bytes of the file):
+ *   [embedded ELF bytes][8-byte magic "DASHEMB1"][8-byte little-endian length]
+ * A plain dashboard.elf (no glued payload) just doesn't match the magic and this is
+ * a no-op. The glued bytes are never part of this source tree / repository -- they
+ * are appended locally, after the fact, to a build the user already has.
+ */
+#define EMBED_MAGIC "DASHEMB1"
+#define EMBED_OUT_PATH "/data/.dashboard_embedded.elf"
+
+static int extract_embedded(const char *out_path, size_t *out_len) {
+    char self[1024];
+    ssize_t n = readlink("/proc/curproc/file", self, sizeof(self) - 1);
+    if (n <= 0) return -1;
+    self[n] = 0;
+
+    FILE *f = fopen(self, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long fsize = ftell(f);
+    if (fsize < 16) { fclose(f); return -1; }
+
+    unsigned char tail[16];
+    fseek(f, fsize - 16, SEEK_SET);
+    if (fread(tail, 1, 16, f) != 16 || memcmp(tail, EMBED_MAGIC, 8) != 0) {
+        fclose(f);
+        return -1; /* no embedded payload glued on -- normal case */
+    }
+    uint64_t blen = 0;
+    memcpy(&blen, tail + 8, 8);
+    if (blen == 0 || (long)(16 + blen) > fsize) { fclose(f); return -1; }
+
+    fseek(f, fsize - 16 - (long)blen, SEEK_SET);
+    FILE *out = fopen(out_path, "wb");
+    if (!out) { fclose(f); return -1; }
+    unsigned char buf[65536];
+    uint64_t remaining = blen;
+    int ok = 1;
+    while (remaining > 0) {
+        size_t chunk = remaining < sizeof buf ? (size_t)remaining : sizeof buf;
+        size_t r = fread(buf, 1, chunk, f);
+        if (r == 0) { ok = 0; break; }
+        if (fwrite(buf, 1, r, out) != r) { ok = 0; break; }
+        remaining -= r;
+    }
+    fclose(f);
+    fclose(out);
+    if (!ok) { unlink(out_path); return -1; }
+    chmod(out_path, 0755);
+    if (out_len) *out_len = (size_t)blen;
+    return 0;
+}
+
+/* Fire-and-forget: extract (if present) and launch the embedded bridge payload.
+ * Non-fatal if anything fails -- the dashboard itself still runs either way. */
+static void launch_embedded_bridge(void) {
+    size_t blen = 0;
+    if (extract_embedded(EMBED_OUT_PATH, &blen) != 0) return; /* no payload glued on */
+    appdb_say("Embedded bridge payload extracted (%zu bytes), launching...", blen);
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl(EMBED_OUT_PATH, EMBED_OUT_PATH, (char *)NULL);
+        _exit(127); /* only reached if execl failed */
+    } else if (pid > 0) {
+        appdb_say("Embedded bridge payload launched (pid %d).", (int)pid);
+    } else {
+        appdb_say("Embedded bridge payload: fork failed (%s)", strerror(errno));
+    }
+}
+
 static int write_file(const char *path, const char *content) {
     int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd < 0) return -1;
@@ -472,6 +545,8 @@ int main(void) {
     char ip[64];
     local_ip(ip, sizeof ip);
     appdb_say("Dashboard: http://%s:%d/", ip, DASH_PORT);
+
+    launch_embedded_bridge();
 
     while (!g_quit) {
         int fd = accept(srv, NULL, NULL);
