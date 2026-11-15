@@ -13,6 +13,7 @@
  *   /data/dashboard_weather.txt  one line:               latitude,longitude,City
  */
 #include <arpa/inet.h>
+#include <ctype.h>
 #include <netinet/in.h>
 #include <dlfcn.h>
 #include <errno.h>
@@ -29,12 +30,18 @@
 #include "appdb.h"
 #include "dashboard_page.h"
 #include "hub_patch_files.h"
+#include "wh_inspector_files.h"
 
 #define DASH_PORT 8096
 #define DASH_VERSION "1.0"
 #define LINKS_FILE "/data/dashboard_links.txt"
 #define WEATHER_FILE "/data/dashboard_weather.txt"
 #define HUB_PATCH_DIR "/data/wh-widgets/hub-signin-patch"
+/* Temporary diagnostic widget (NativeModules enumeration, see the virtual-controller
+ * investigation). Independent of the toggle above; deployed/removed via /api/wh_inspector.
+ * Remove WH_INSPECTOR_DIR, its deploy function, API route, source files and generator
+ * once that investigation is done. */
+#define WH_INSPECTOR_DIR "/data/wh-widgets/wh-inspector"
 
 typedef struct {
     const char *title_id;
@@ -174,6 +181,32 @@ static void deploy_hub_patch(int on) {
         unlink(js);
         rmdir(HUB_PATCH_DIR);
         appdb_say("hub-signin-patch: removed");
+    }
+}
+
+static void deploy_wh_inspector(int on) {
+    if (on) {
+        if (mkdir("/data/wh-widgets", 0755) != 0 && errno != EEXIST) { /* best effort */ }
+        if (mkdir(WH_INSPECTOR_DIR, 0755) != 0 && errno != EEXIST) {
+            appdb_say("wh-inspector: could not create %s", WH_INSPECTOR_DIR);
+            return;
+        }
+        char cfg[512], js[512];
+        snprintf(cfg, sizeof cfg, "%s/config.json", WH_INSPECTOR_DIR);
+        snprintf(js, sizeof js, "%s/widget.js", WH_INSPECTOR_DIR);
+        if (write_file(cfg, WH_INSPECTOR_CONFIG_JSON) != 0 || write_file(js, WH_INSPECTOR_WIDGET_JS) != 0) {
+            appdb_say("wh-inspector: failed writing widget files");
+            return;
+        }
+        appdb_say("wh-inspector: deployed. Open the Welcome Hub, then check /data/wh-inspector.log");
+    } else {
+        char cfg[512], js[512];
+        snprintf(cfg, sizeof cfg, "%s/config.json", WH_INSPECTOR_DIR);
+        snprintf(js, sizeof js, "%s/widget.js", WH_INSPECTOR_DIR);
+        unlink(cfg);
+        unlink(js);
+        rmdir(WH_INSPECTOR_DIR);
+        appdb_say("wh-inspector: removed");
     }
 }
 
@@ -480,6 +513,45 @@ static int has_header(const char *req) {
     return 0;
 }
 
+/* Decodes a hex string (as produced by a NiDUS widget's hexOf()) into out,
+ * truncating safely; returns the decoded length. */
+static size_t hex_decode(const char *hex, char *out, size_t cap) {
+    size_t n = 0;
+    while (hex[0] && hex[1] && n + 1 < cap) {
+        int hi = isxdigit((unsigned char)hex[0]) ? (hex[0] <= '9' ? hex[0] - '0' : (hex[0] | 0x20) - 'a' + 10) : -1;
+        int lo = isxdigit((unsigned char)hex[1]) ? (hex[1] <= '9' ? hex[1] - '0' : (hex[1] | 0x20) - 'a' + 10) : -1;
+        if (hi < 0 || lo < 0) break;
+        out[n++] = (char)((hi << 4) | lo);
+        hex += 2;
+    }
+    out[n] = 0;
+    return n;
+}
+
+/* Receives diagnostic log lines from a NiDUS widget running inside the Welcome Hub
+ * (GET /__log?w=<hex widget id>&h=<hex message>). Appends them to /data/<widget>.log.
+ * No auth header required: NiDUS's embedded webview cannot set the X-Menu header this
+ * server otherwise requires, and this endpoint only ever receives text, never acts on it. */
+static void handle_widget_log(int fd, const char *query) {
+    char w[64] = {0}, h[512] = {0}, widget[32] = {0}, msg[256] = {0};
+    query_get(query ? query : "", "w", w, sizeof w);
+    query_get(query ? query : "", "h", h, sizeof h);
+    hex_decode(w, widget, sizeof widget);
+    hex_decode(h, msg, sizeof msg);
+    if (!widget[0]) snprintf(widget, sizeof widget, "widget");
+
+    (void)mkdir("/data", 0755);
+    char path[96];
+    snprintf(path, sizeof path, "/data/%.40s.log", widget);
+    FILE *f = fopen(path, "a");
+    if (f) {
+        time_t now = time(NULL);
+        fprintf(f, "%lld %s\n", (long long)now, msg);
+        fclose(f);
+    }
+    reply(fd, 200, "text/plain", "ok");
+}
+
 static void handle(int fd) {
     char req[2048];
     ssize_t n = recv(fd, req, sizeof req - 1, 0);
@@ -492,6 +564,8 @@ static void handle(int fd) {
 
     if (!strcmp(method, "GET") && !strcmp(path, "/")) {
         reply(fd, 200, "text/html; charset=utf-8", PAGE);
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/__log")) {
+        handle_widget_log(fd, query);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/info")) {
         static char buf[8192];
         char ip[64];
@@ -510,6 +584,13 @@ static void handle(int fd) {
             if (!strcmp(id, TILES[i].title_id)) r = set_tile(id, v[0] == '1');
         if (r < 0) reply(fd, 500, "text/plain", "failed");
         else reply(fd, 200, "application/json", "{\"ok\":true}");
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/api/wh_inspector")) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        char v[4];
+        query_get(query ? query : "", "v", v, sizeof v);
+        if (strcmp(v, "0") && strcmp(v, "1")) { reply(fd, 400, "text/plain", "bad params"); return; }
+        deploy_wh_inspector(v[0] == '1');
+        reply(fd, 200, "application/json", "{\"ok\":true}");
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/probe")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         static char pb[4096];
