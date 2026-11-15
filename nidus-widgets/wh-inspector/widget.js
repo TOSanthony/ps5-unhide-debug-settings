@@ -1,6 +1,6 @@
-// wh-inspector v8: v7 scanned all 279 base_dll module exports for a redux-like store
-// and found none -- the store is likely never exported as a module singleton, only
-// passed as a prop to react-redux's <Provider store={...}> component. v8 reuses v6's
+// wh-inspector v9: v8's props.value check expected the context value ITSELF to duck-type
+// as a store, but react-redux's Context.Provider actually passes { store, subscription },
+// not the store directly. v9 adds a check for props.value.store too (still read-only).
 // createElement hook, but instead of logging component type names, it watches every
 // element's props for a "store" key that duck-types as redux (getState/dispatch/
 // subscribe), and the first time it finds one, reads getState() ONCE (read-only, no
@@ -26,7 +26,7 @@
 
   var runs = (root.__wh_insp_runs || 0) + 1;
   root.__wh_insp_runs = runs;
-  send('=== v8 run #' + runs + ' ===');
+  send('=== v9 run #' + runs + ' ===');
 
   function safeKeys(o) {
     try { return Object.keys(o); } catch (e) { return []; }
@@ -91,6 +91,10 @@
             } else if (props && props.value && looksLikeStore(props.value)) {
               storeFound = true;
               reportStore(props.value, 'Context props.value (after ' + checked + ' elements)');
+            } else if (props && props.value && typeof props.value === 'object'
+                       && looksLikeStore(props.value.store)) {
+              storeFound = true;
+              reportStore(props.value.store, 'Context props.value.store (after ' + checked + ' elements)');
             }
           } catch (e) {
             send('hook error: ' + (e && e.message ? e.message : e));
@@ -106,7 +110,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    send('v8 init complete, run #' + runs);
+    send('v9 init complete, run #' + runs);
   } catch (e) {
     send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
