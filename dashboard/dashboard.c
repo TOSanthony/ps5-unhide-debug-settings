@@ -501,6 +501,11 @@ static void info_json(char *out, size_t cap, const char *ip) {
     off += (size_t)snprintf(out + off, cap - off, "\"},");
 
     off = links_json(out, cap, off);
+
+    struct stat whst;
+    int wh_deployed = stat(WH_INSPECTOR_DIR, &whst) == 0;
+    off += (size_t)snprintf(out + off, cap - off, ",\"wh_inspector\":%s", wh_deployed ? "true" : "false");
+
     off += (size_t)snprintf(out + off, cap - off, "}");
 }
 
@@ -552,6 +557,22 @@ static void handle_widget_log(int fd, const char *query) {
     reply(fd, 200, "text/plain", "ok");
 }
 
+/* Returns the content of /data/wh-inspector.log as a JSON string, for the dashboard's
+ * "Diagnostic" panel. Requires the same X-Menu header as the other admin actions. */
+static void handle_wh_inspector_log(int fd) {
+    static char buf[16384];
+    size_t off = (size_t)snprintf(buf, sizeof buf, "{\"log\":\"");
+    FILE *f = fopen("/data/wh-inspector.log", "r");
+    if (f) {
+        char line[1024];
+        while (fgets(line, sizeof line, f) && off + 64 < sizeof buf)
+            off = json_str_nl(buf, sizeof buf, off, line);
+        fclose(f);
+    }
+    off += (size_t)snprintf(buf + off, sizeof buf - off, "\"}");
+    reply(fd, 200, "application/json", buf);
+}
+
 static void handle(int fd) {
     char req[2048];
     ssize_t n = recv(fd, req, sizeof req - 1, 0);
@@ -591,6 +612,9 @@ static void handle(int fd) {
         if (strcmp(v, "0") && strcmp(v, "1")) { reply(fd, 400, "text/plain", "bad params"); return; }
         deploy_wh_inspector(v[0] == '1');
         reply(fd, 200, "application/json", "{\"ok\":true}");
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/wh_inspector_log")) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        handle_wh_inspector_log(fd);
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/probe")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         static char pb[4096];

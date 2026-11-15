@@ -29,6 +29,11 @@ padding:14px clamp(14px,4vw,28px) 40px;max-width:1600px;margin:auto}
 a.link{display:block;margin:6px 0;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.06);color:var(--txt);text-decoration:none}
 a.link:hover{background:rgba(59,130,246,.35)}
 small{color:var(--mut)}
+#whlog{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(0,0,0,.35);
+border-radius:10px;padding:10px;margin-top:10px;font:12px/1.4 ui-monospace,Consolas,monospace}
+button.mini{background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--txt);border-radius:8px;
+padding:6px 12px;font-size:13px;cursor:pointer}
+button.mini:hover{background:rgba(59,130,246,.3)}
 #backdrop{position:fixed;inset:0;background:rgba(0,0,0,.55);display:none;z-index:10}
 #backdrop.open{display:block}
 #settings{position:fixed;top:0;right:0;height:100%;width:min(360px,92vw);background:#11141f;
@@ -52,6 +57,7 @@ padding:18px;overflow:auto}
  <h1>Réglages</h1>
  <section class="card"><h2>ACCUEIL PS5</h2><div id="tiles">...</div></section>
  <section class="card" style="margin-top:14px"><h2>ORBIT STORE</h2><div id="orbit">...</div></section>
+ <section class="card" style="margin-top:14px"><h2>DIAGNOSTIC</h2><div id="diag">...</div></section>
 </aside>
 <script>
 const $=id=>document.getElementById(id);
@@ -63,6 +69,13 @@ function closeSettings(){$('backdrop').classList.remove('open');$('settings').cl
 async function act(url){try{const r=await fetch(url,{method:'POST',headers:H});if(!r.ok)throw 0;note='Redémarre la PS5 pour appliquer.'}catch(e){note='Échec (sauvegarde ou base inaccessible).'}await load()}
 const setTile=(id,v)=>act('/api/set?id='+id+'&v='+(v?1:0));
 const setOrbit=v=>act('/api/orbit?v='+(v?1:0));
+const setWhInspector=v=>act('/api/wh_inspector?v='+(v?1:0));
+let whlogOpen=false,whlogText='';
+async function viewLog(){whlogOpen=true;$('whlogbox').style.display='block';$('whlog').textContent='Chargement…';
+ try{const r=await fetch('/api/wh_inspector_log',{headers:H});const j=await r.json();
+  whlogText=j.log||'(journal vide — ouvre le Welcome Hub sur la console puis réessaie)'}
+ catch(e){whlogText='Échec de la lecture du journal.'}
+ $('whlog').textContent=whlogText}
 const gb=b=>(b/1073741824).toFixed(1)+' Go';
 function tick(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
  $('date').textContent=d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'})}
@@ -78,6 +91,7 @@ async function load(){try{const r=await fetch('/api/info',{cache:'no-store'});co
  $('tiles').innerHTML=j.tiles.map(t=>'<div class="row"><span>'+esc(t.label)+'</span><button class="sw '+(t.visible?'on':'')+'" '+(t.found?'':'disabled ')+'title="'+(t.visible?'visible':'masqué')+'" onclick="setTile(\''+esc(t.id)+'\','+(t.visible?0:1)+')"></button></div>').join('')+'<small>'+note+'</small>';
  $('links').innerHTML=j.links.map(l=>'<a class="link" target="_blank" rel="noopener" href="'+esc(l.url)+'">'+esc(l.label)+'</a>').join('')||'<small>Aucun raccourci. Cree /data/dashboard_links.txt (une ligne par lien : Nom|http://...).</small>';
  const o=j.orbit;$('orbit').innerHTML=o.found?'<div class="row"><span>Épinglé à gauche</span><button class="sw '+(o.pinned?'on':'')+'" onclick="setOrbit('+(o.pinned?0:1)+')"></button></div><small>Verrou maintenu automatiquement tant que dashboard.elf tourne.</small>':'<small>Non installé</small>';
+ $('diag').innerHTML='<div class="row"><span>Widget Hub Inspector</span><button class="sw '+(j.wh_inspector?'on':'')+'" onclick="setWhInspector('+(j.wh_inspector?0:1)+')"></button></div><small>Déploie un widget de diagnostic dans le Welcome Hub (liste les NativeModules disponibles).</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewLog()">Voir le journal</button></div><div id="whlogbox" style="display:'+(whlogOpen?'block':'none')+'"><div id="whlog">'+esc(whlogText)+'</div></div>';
  if(!wxDone){wxDone=true;weather(j.weather)}
 }catch(e){}}
 load();setInterval(load,10000);
