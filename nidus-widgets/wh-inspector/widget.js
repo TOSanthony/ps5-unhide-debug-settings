@@ -1,10 +1,10 @@
-// wh-inspector v10: v9 found A store (productRating/userRating/hubScene/experiments/
-// friendsWhoPlay) but it stopped at the FIRST one found -- that's a small, widget-local
-// store (ratings/social card), not the app-wide sign-in/auth store. createElement calls
-// fire leaf-first (JS evaluates arguments before the call), so the first Provider we hit
-// is an INNER one, not the outermost app Provider. v10 keeps scanning and reports EVERY
-// distinct store it sees (deduped by reference), with just its top-level state keys
-// (brief, to avoid flooding before the next hub restart) -- still fully read-only.
+// wh-inspector v11: v10 only ever saw 18 createElement calls before the hub restarted --
+// too few for a whole screen. Modern RN/Babel bundles usually compile JSX to jsx()/jsxs()
+// from the 'react/jsx-runtime' module instead of React.createElement, so our hook was
+// likely only catching NiDUS's own internal widget rendering, not the Hub's real screens.
+// v11 keeps the createElement hook AND additionally scans base_dll.c for the jsx-runtime
+// module (exports.jsx / exports.jsxs as functions) and patches those the same way --
+// same (type, props, key) signature, same store-detection logic. Still fully read-only.
 (function (wh) {
   var root = globalThis;
 
@@ -26,7 +26,7 @@
 
   var runs = (root.__wh_insp_runs || 0) + 1;
   root.__wh_insp_runs = runs;
-  send('=== v10 run #' + runs + ' ===');
+  send('=== v11 run #' + runs + ' ===');
 
   function safeKeys(o) {
     try { return Object.keys(o); } catch (e) { return []; }
@@ -37,6 +37,10 @@
       && typeof o.dispatch === 'function'
       && typeof o.subscribe === 'function';
   }
+
+  var seen = [];
+  var count = 0;
+  var MAX_STORES = 10;
 
   function briefReport(store, where, idx) {
     var state;
@@ -62,52 +66,81 @@
     }
   }
 
+  function tryStore(candidate, label) {
+    if (!looksLikeStore(candidate)) return false;
+    for (var i = 0; i < seen.length; i++) if (seen[i] === candidate) return true;
+    if (count >= MAX_STORES) return true;
+    seen.push(candidate);
+    count++;
+    briefReport(candidate, label, count);
+    return true;
+  }
+
+  function checkProps(props, tag, n) {
+    if (!props) return;
+    try {
+      if (props.store) tryStore(props.store, tag + ' props.store (#' + n + ')');
+      else if (props.value) {
+        if (!tryStore(props.value, tag + ' props.value (#' + n + ')')) {
+          if (typeof props.value === 'object') tryStore(props.value.store, tag + ' props.value.store (#' + n + ')');
+        }
+      }
+    } catch (e) {
+      send('hook error (' + tag + '): ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  function wrap(fn, tag, counterRef) {
+    return function (type, props) {
+      if (counterRef.n < counterRef.max && count < MAX_STORES) {
+        counterRef.n++;
+        checkProps(props, tag, counterRef.n);
+      }
+      return fn.apply(this, arguments);
+    };
+  }
+
   try {
     if (!wh || !wh.React) { send('abort: wh/React missing'); return; }
 
-    if (root.__wh_insp10_hooked) {
-      send('createElement already hooked (persisted), run #' + runs);
+    if (root.__wh_insp11_hooked) {
+      send('hooks already installed (persisted), run #' + runs);
     } else {
-      root.__wh_insp10_hooked = true;
+      root.__wh_insp11_hooked = true;
+
       var React = wh.React;
-      var origCreateElement = React.createElement;
-      if (typeof origCreateElement !== 'function') { send('createElement missing'); return; }
-
-      var checked = 0;
-      var MAX_CHECK = 6000;
-      var MAX_STORES = 10;
-      var seen = [];
-      var count = 0;
-
-      function tryStore(candidate, label) {
-        if (!looksLikeStore(candidate)) return false;
-        for (var i = 0; i < seen.length; i++) if (seen[i] === candidate) return true; // already reported
-        if (count >= MAX_STORES) return true;
-        seen.push(candidate);
-        count++;
-        briefReport(candidate, label, count);
-        return true;
+      var ceCounter = { n: 0, max: 6000 };
+      if (typeof React.createElement === 'function') {
+        var origCE = React.createElement;
+        React.createElement = wrap(origCE, 'createElement', ceCounter);
+        send('createElement hooked');
+      } else {
+        send('createElement missing on wh.React');
       }
 
-      React.createElement = function (type, props) {
-        if (checked < MAX_CHECK && count < MAX_STORES) {
-          checked++;
-          try {
-            if (props && props.store) tryStore(props.store, 'props.store (#' + checked + ')');
-            else if (props && props.value) {
-              if (!tryStore(props.value, 'props.value (#' + checked + ')')) {
-                if (props.value && typeof props.value === 'object') {
-                  tryStore(props.value.store, 'props.value.store (#' + checked + ')');
-                }
-              }
+      var base = root.base_dll;
+      if (typeof base === 'function' && base.c) {
+        var ids = Object.getOwnPropertyNames(base.c);
+        var jsxHooked = 0;
+        for (var i = 0; i < ids.length; i++) {
+          var ex;
+          try { ex = base.c[ids[i]].exports; } catch (e) { continue; }
+          if (!ex || typeof ex !== 'object') continue;
+          ['jsx', 'jsxs', 'jsxDEV'].forEach(function (fname) {
+            if (typeof ex[fname] === 'function' && !ex[fname].__wh_wrapped) {
+              var origFn = ex[fname];
+              var ctr = { n: 0, max: 6000 };
+              var wrapped = wrap(origFn, 'module ' + ids[i] + '.' + fname, ctr);
+              wrapped.__wh_wrapped = true;
+              ex[fname] = wrapped;
+              jsxHooked++;
             }
-          } catch (e) {
-            send('hook error: ' + (e && e.message ? e.message : e));
-          }
+          });
         }
-        return origCreateElement.apply(this, arguments);
-      };
-      send('createElement hooked for the first time, run #' + runs);
+        send('jsx-runtime style hooks installed on ' + jsxHooked + ' export(s) across ' + ids.length + ' modules');
+      } else {
+        send('base_dll missing, cannot scan for jsx-runtime');
+      }
     }
 
     if (wh.register) {
@@ -115,7 +148,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    send('v10 init complete, run #' + runs);
+    send('v11 init complete, run #' + runs);
   } catch (e) {
     send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
