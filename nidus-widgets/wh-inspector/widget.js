@@ -1,103 +1,75 @@
-// wh-inspector: diagnostic widget for NiDUS. It draws nothing useful; it writes to
-// /data/wh-widgets/wh.log what the Welcome Hub runtime contains (modules, native modules,
-// text shown on screen and where the "sign in" text comes from), to find the sign-in check.
+// wh-inspector v2: no [widget:*] line ever appeared from any widget (not even
+// hello-wh/payload-monitor), so first confirm whether widget.js code runs at all and
+// whether wh.logger's queue actually reaches wh.log. Logs over a direct fetch to the
+// asset server's /__log endpoint, synchronously at the top, bypassing wh.logger's queue.
 (function (wh) {
   var root = globalThis;
-  var out = [];
-  var log = wh.logger('wh-inspector');
-  var sent = 0, MAX = 110;
-  function say(s) { out.push(String(s)); }
-  var pump = setInterval(function () {
-    if (!out.length || sent >= MAX) { if (sent >= MAX) clearInterval(pump); return; }
-    sent++;
-    log(out.shift().slice(0, 380));
-  }, 600);
-  function chunk(tag, arr) {
-    var line = tag + ': ', n = 0;
-    for (var i = 0; i < arr.length; i++) {
-      if (line.length + arr[i].length > 360) { say(line); line = tag + '+ '; if (++n > 12) return; }
-      line += arr[i] + ' ';
-    }
-    if (line.length > tag.length + 3) say(line);
-  }
-  var KEY = /sign|login|logout|npstate|account|psn|online|offline|auth|session|connected|network|user/i;
 
-  function scan(label) {
+  function raw(msg) {
     try {
-      var base = root.base_dll, ids = [];
-      if (typeof base === 'function' && base.c) ids = Object.getOwnPropertyNames(base.c);
-      say('[' + label + '] base_dll modules: ' + ids.length);
-      var nativeNames = [], hits = [];
+      var url = 'http://127.0.0.1:8098/__log?w=776828696e73706563746f72&h='; // "wh-inspector" hex, fixed tag
+      var hex = '';
+      var s = String(msg);
+      for (var i = 0; i < s.length && hex.length < 700; i++) {
+        var c = s.charCodeAt(i);
+        hex += (c < 16 ? '0' : '') + c.toString(16);
+      }
+      url += hex;
+      if (root.fetch) {
+        root.fetch(url).catch(function () {});
+      } else if (root.XMLHttpRequest) {
+        var x = new root.XMLHttpRequest();
+        x.open('GET', url, true);
+        x.send();
+      }
+    } catch (e) {}
+  }
+
+  raw('v2 top-level reached; __wh=' + (wh ? 'yes' : 'NO') +
+      ' React=' + (wh && wh.React ? 'yes' : 'no') +
+      ' View=' + (wh && wh.View ? 'yes' : 'no') +
+      ' fetch=' + (typeof root.fetch) +
+      ' base_dll=' + (typeof root.base_dll));
+
+  try {
+    if (!wh) { raw('abort: wh is null/undefined'); return; }
+
+    raw('wh keys: ' + Object.keys(wh).join(','));
+
+    var base = root.base_dll;
+    if (typeof base === 'function' && base.c) {
+      var ids = Object.getOwnPropertyNames(base.c);
+      raw('base_dll.c module count=' + ids.length);
+      var nmFound = [];
       for (var i = 0; i < ids.length; i++) {
         var ex;
         try { ex = base.c[ids[i]].exports; } catch (e) { continue; }
-        if (!ex || (typeof ex !== 'object' && typeof ex !== 'function')) continue;
-        var keys = [];
-        try { keys = Object.keys(ex); } catch (e) { continue; }
-        if (ex.NativeModules && typeof ex.NativeModules === 'object') {
-          try { nativeNames = Object.keys(ex.NativeModules); } catch (e) {}
-        }
-        for (var k = 0; k < keys.length && k < 400; k++) {
-          if (KEY.test(keys[k])) hits.push(String(ids[i]) + ':' + keys[k]);
+        if (ex && typeof ex === 'object' && ex.NativeModules) {
+          try { nmFound = nmFound.concat(Object.keys(ex.NativeModules)); } catch (e) {}
         }
       }
-      chunk('[' + label + '] NativeModules', nativeNames);
-      chunk('[' + label + '] keys~sign/user/online', hits.slice(0, 120));
-    } catch (e) { say('[' + label + '] scan failed: ' + e); }
-  }
+      raw('NativeModules seen: ' + nmFound.slice(0, 60).join(','));
+    } else {
+      raw('base_dll missing or not a function (' + typeof base + ')');
+    }
 
-  // Native module methods that look related to sign-in / user state.
-  function scanNative() {
-    try {
-      var base = root.base_dll, ids = Object.getOwnPropertyNames(base.c), nm = null;
-      for (var i = 0; i < ids.length && !nm; i++) {
-        try { var ex = base.c[ids[i]].exports; if (ex && ex.NativeModules) nm = ex.NativeModules; } catch (e) {}
-      }
-      if (!nm) { say('NativeModules object not found'); return; }
-      var res = [];
-      Object.keys(nm).forEach(function (name) {
-        var m; try { m = nm[name]; } catch (e) { return; }
-        if (!m) return;
-        var mk = []; try { mk = Object.keys(m); } catch (e) {}
-        var f = mk.filter(function (x) { return KEY.test(x) || KEY.test(name); });
-        if (f.length) res.push(name + '{' + f.slice(0, 8).join(',') + '}');
+    if (wh.logger) {
+      var log = wh.logger('wh-inspector');
+      log('v2 reached wh.logger() call too');
+    } else {
+      raw('wh.logger missing');
+    }
+
+    if (wh.register) {
+      wh.register(function Dummy() {
+        return wh.React ? wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } }) : null;
       });
-      chunk('native methods', res);
-    } catch (e) { say('scanNative failed: ' + e); }
+      raw('wh.register() called without throwing');
+    } else {
+      raw('wh.register missing');
+    }
+  } catch (e) {
+    raw('EXCEPTION: ' + (e && e.message ? e.message : e) +
+        (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
   }
-
-  // Text on screen: who creates a string that looks like a sign-in prompt.
-  var seenText = {}, nText = 0, nComp = {}, nCompN = 0;
-  var TXT = /connect|sign|login|sesi|PSN|network|offline|account|compte/i;
-  try {
-    var R = wh.React, orig = R.createElement;
-    R.createElement = function (type, props) {
-      try {
-        var name = (type && (type.displayName || type.name)) || (typeof type === 'string' ? type : '');
-        if (name && !nComp[name] && nCompN < 80) { nComp[name] = 1; nCompN++; }
-        var ch = props && props.children;
-        var s = typeof ch === 'string' ? ch : (arguments.length > 2 && typeof arguments[2] === 'string' ? arguments[2] : '');
-        if (s && s.length < 120 && !seenText[s] && nText < 40) {
-          seenText[s] = 1; nText++;
-          var st = '';
-          if (TXT.test(s)) { try { st = ' | ' + String(new Error().stack).replace(/\s+/g, ' ').slice(0, 200); } catch (e) {} }
-          say('text "' + s + '" in ' + name + st);
-        }
-      } catch (e) {}
-      return orig.apply(this, arguments);
-    };
-  } catch (e) { say('createElement hook failed: ' + e); }
-
-  setTimeout(function () { scan('t+1s'); scanNative(); }, 1000);
-  setTimeout(function () { scan('t+10s'); chunk('components', Object.keys(nComp)); }, 10000);
-  setTimeout(function () {
-    try {
-      var g = Object.getOwnPropertyNames(root).filter(function (x) { return KEY.test(x) || /^__|hub|Hub/.test(x); });
-      chunk('globals', g.slice(0, 150));
-    } catch (e) {}
-  }, 3000);
-  say('wh-inspector started');
-
-  function Dummy() { return wh.React.createElement(wh.View, { style: { width: 10, height: 10 } }); }
-  wh.register(Dummy);
 })(globalThis.__wh);
