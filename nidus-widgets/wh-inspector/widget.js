@@ -1,10 +1,10 @@
-// wh-inspector v6: locate WHICH rendered component shows the "Se connecter" /
-// sign-in text, by hooking React.createElement and watching every element's
-// text-bearing props (children/title/label/text) for a match on /connect|connex/i
-// (covers "Se connecter" and "Connexion"). Logs the component's type name + the
-// matched text for the first few hits, and separately logs any distinct function
-// component name that looks sign-in/auth/gate related, to help map the tree.
-// This does NOT patch/remove anything yet -- v6 only finds where it's written.
+// wh-inspector v7: v6 found generic HOC chains (withPartialFlowScreen(Connect(t)), etc.)
+// but never caught the literal "Se connecter" text via createElement text props --
+// it's resolved through an i18n/label system (I18nPS/Label/Glyph), not a literal string.
+// react-redux's Connect(...) wrapper tells us state is centralized in a Redux store.
+// v7 looks for that store (duck-typed: has .getState/.dispatch/.subscribe as functions),
+// calls ONLY store.getState() (read-only, no dispatch, nothing patched), and sends back
+// just the parts of the state tree whose keys look sign-in/auth/account related.
 (function (wh) {
   var root = globalThis;
 
@@ -26,78 +26,93 @@
 
   var runs = (root.__wh_insp_runs || 0) + 1;
   root.__wh_insp_runs = runs;
-  send('=== v6 run #' + runs + ' ===');
+  send('=== v7 run #' + runs + ' ===');
 
   try {
-    if (!wh || !wh.React) { send('abort: wh/React missing'); return; }
+    if (!wh) { send('abort: wh missing'); return; }
+    var base = root.base_dll;
+    if (typeof base !== 'function' || !base.c) { send('base_dll missing'); return; }
 
-    if (root.__wh_insp_hooked) {
-      send('createElement already hooked (persisted across restart), run #' + runs);
-    } else {
-      root.__wh_insp_hooked = true;
-
-      var React = wh.React;
-      var origCreateElement = React.createElement;
-      if (typeof origCreateElement !== 'function') { send('createElement missing, cannot hook'); return; }
-
-      var MAX_HITS = 8;
-      var hits = 0;
-      var seenTypes = {};
-      var MAX_TYPES = 40;
-
-      function typeName(t) {
-        if (!t) return String(t);
-        if (typeof t === 'string') return t;
-        if (t.displayName) return t.displayName;
-        if (t.name) return t.name;
-        if (t.render && t.render.name) return 'memo(' + t.render.name + ')';
-        return typeof t;
-      }
-
-      function textOf(props) {
-        if (!props) return '';
-        var parts = [];
-        if (typeof props.children === 'string') parts.push(props.children);
-        if (Array.isArray(props.children)) {
-          props.children.forEach(function (c) { if (typeof c === 'string') parts.push(c); });
-        }
-        if (typeof props.title === 'string') parts.push(props.title);
-        if (typeof props.label === 'string') parts.push(props.label);
-        if (typeof props.text === 'string') parts.push(props.text);
-        return parts.join(' | ');
-      }
-
-      React.createElement = function (type, props) {
-        try {
-          if (hits < MAX_HITS) {
-            var txt = textOf(props);
-            if (txt && /connect|connex/i.test(txt)) {
-              hits++;
-              send('HIT#' + hits + ' type=' + typeName(type) + ' text="' + txt.slice(0, 80) + '"');
-            }
-          }
-          if (Object.keys(seenTypes).length < MAX_TYPES && typeof type === 'function') {
-            var tn = typeName(type);
-            if (tn && !seenTypes[tn] && /sign|login|connect|connex|auth|hub|screen|gate|psn/i.test(tn)) {
-              seenTypes[tn] = 1;
-              send('TYPE seen: ' + tn);
-            }
-          }
-        } catch (e) {
-          send('hook error: ' + (e && e.message ? e.message : e));
-        }
-        return origCreateElement.apply(this, arguments);
-      };
-
-      send('createElement hooked for the first time, run #' + runs);
+    function looksLikeStore(o) {
+      return !!o && typeof o === 'object'
+        && typeof o.getState === 'function'
+        && typeof o.dispatch === 'function'
+        && typeof o.subscribe === 'function';
     }
+
+    function safeKeys(o) {
+      try { return Object.keys(o); } catch (e) { return []; }
+    }
+
+    var store = null, foundId = null;
+    var ids = Object.getOwnPropertyNames(base.c);
+    for (var i = 0; i < ids.length && !store; i++) {
+      var ex;
+      try { ex = base.c[ids[i]].exports; } catch (e) { continue; }
+      if (!ex) continue;
+      if (looksLikeStore(ex)) { store = ex; foundId = String(ids[i]); break; }
+      if (typeof ex === 'object') {
+        var keys = safeKeys(ex);
+        for (var j = 0; j < keys.length; j++) {
+          var k = keys[j], v;
+          try { v = ex[k]; } catch (e) { continue; }
+          if (looksLikeStore(v)) { store = v; foundId = ids[i] + '.' + k; break; }
+        }
+      }
+      if (store) break;
+    }
+    if (!store) {
+      ['store', '__store', '__REDUX_STORE__'].forEach(function (name) {
+        if (!store && looksLikeStore(root[name])) { store = root[name]; foundId = 'global.' + name; }
+      });
+    }
+
+    if (!store) { send('no redux-like store found (scanned ' + ids.length + ' modules)'); return; }
+    send('store found at ' + foundId);
+
+    var state;
+    try { state = store.getState(); } catch (e) { send('getState threw: ' + (e && e.message ? e.message : e)); return; }
+
+    if (!state || typeof state !== 'object') { send('state is not an object: ' + typeof state); return; }
+
+    var topKeys = safeKeys(state);
+    send('top-level state keys: ' + topKeys.join(','));
+
+    var interesting = topKeys.filter(function (k) {
+      return /sign|auth|login|connect|account|psn|user/i.test(k);
+    });
+    send('interesting keys: ' + (interesting.join(',') || '(none)'));
+
+    interesting.slice(0, 6).forEach(function (k) {
+      var sub = state[k];
+      var out;
+      try {
+        if (sub && typeof sub === 'object') {
+          var subKeys = safeKeys(sub);
+          var parts = [];
+          subKeys.slice(0, 20).forEach(function (sk) {
+            var v = sub[sk];
+            var t = typeof v;
+            var vs;
+            if (t === 'object' && v) vs = '{' + safeKeys(v).slice(0, 10).join(',') + '}';
+            else if (t === 'function') vs = 'fn';
+            else vs = String(v);
+            parts.push(sk + '=' + vs);
+          });
+          out = parts.join(' | ');
+        } else {
+          out = String(sub);
+        }
+      } catch (e) { out = 'err:' + (e && e.message ? e.message : e); }
+      send('STATE.' + k + ' -> ' + String(out).slice(0, 280));
+    });
 
     if (wh.register) {
       wh.register(function Dummy() {
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    send('v6 init complete, run #' + runs);
+    send('v7 init complete, run #' + runs);
   } catch (e) {
     send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
