@@ -41,7 +41,7 @@ jobs:
         run: make
 
       - name: Checksum
-        run: sha256sum welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf | tee payloads.sha256
+        run: sha256sum welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf pad_probe.elf | tee payloads.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -51,6 +51,7 @@ jobs:
             toggle_store.elf
             icon_menu.elf
             dashboard.elf
+            pad_probe.elf
             payloads.sha256
 
   release:
@@ -75,7 +76,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
-              welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf payloads.sha256
+              welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf pad_probe.elf payloads.sha256
           else
             # Push sur main -> release "latest" recréée à chaque fois
             gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
@@ -85,5 +86,5 @@ jobs:
               --prerelease \
               --title "Latest build (${GITHUB_SHA::7})" \
               --notes "Build automatique du commit $GITHUB_SHA" \
-              welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf payloads.sha256
+              welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf pad_probe.elf payloads.sha256
           fi
