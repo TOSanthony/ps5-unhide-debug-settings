@@ -20,10 +20,10 @@
  *
  *   3. If most of libScePad.sprx came back unreadable in (1): whether the bytes can
  *      instead be read by making SceShellCore itself call memcpy() into a scratch
- *      buffer we allocate (see probe_indirect_read()). This still never writes to any
- *      file or system memory; it uses a bounded single-step loop (call_bounded()) so
- *      that if the call hits a genuinely protected page, we abort and restore
- *      SceShellCore's exact prior register state instead of letting anything crash.
+ *      buffer we allocate (see probe_indirect_read()). The injected call runs through
+ *      a temporary one-byte breakpoint (call_breakpoint()) rather than a single-step
+ *      loop, so it resolves at native speed; the breakpoint byte and SceShellCore's
+ *      exact prior registers are always restored before returning, on every exit path.
  *
  * It attaches briefly to SceShellCore via ptrace (ptrace helpers are a modified copy of
  * John Tornblom's pt.c/pt.h, GPL-3.0-or-later, already used elsewhere in this repo's
@@ -36,8 +36,10 @@
 #include <sys/user.h>
 #include <sys/sysctl.h>
 #include <sys/mman.h>
+#include <sys/wait.h>
 #include <machine/reg.h>
 #include <errno.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -178,49 +180,100 @@ static intptr_t scan_pad_module(pid_t pid) {
  * them into memory we control -- the technique Ghostpad's "hidDumper" tool
  * used after finding that direct copyin/copyout into SceShellCore fails.
  *
- * Safety: the call is made through call_bounded() below, never the library's
- * own pt_call(). If the injected call doesn't return within CALL_MAX_STEPS
- * single-steps -- which is what happens if it faults trying to read a
- * genuinely protected page, since pt_step() always passes signal 0 and so
- * never lets that fault actually reach the process -- we give up, restore
- * the exact register state SceShellCore had before we touched it, and carry
- * on. Nothing is ever patched or written back into the target; the only
- * memory we write to is a scratch page we ourselves just allocated.
+ * A first version of this call wrapper single-stepped the injected call one
+ * instruction at a time, bounded at 200000 steps. On real hardware that
+ * turned out impractically slow (each ptrace step round-trips through a
+ * privilege-elevation dance), visibly slowing the whole shell for minutes
+ * without ever resolving, and had to be recovered with a normal reboot.
+ *
+ * call_breakpoint() below replaces that: it plants a one-byte breakpoint
+ * (0xCC) at the address the injected call's own `ret` will return to --
+ * read directly off the stack before touching anything -- then PT_CONTINUEs
+ * instead of single-stepping. The tracee runs at native speed and any
+ * outcome stops it in a way waitpid() catches: hitting our breakpoint means
+ * the call finished (SIGTRAP), a fault on a protected page also stops it
+ * (SIGSEGV, etc, caught the same way ptrace always catches signals in a
+ * traced process). So this resolves in roughly native execution time
+ * instead of minutes, for a tiny memcpy. Nothing is ever left patched: the
+ * breakpoint byte and the exact pre-call registers are always restored
+ * before returning, on every exit path.
  */
-#define CALL_MAX_STEPS 200000
+#define BP_POLL_INTERVAL_US 2000      /* 2ms between polls while waiting */
+#define BP_TIMEOUT_US       3000000   /* soft timeout before falling back to a blocking wait */
 
-/* Like pt_call() in pt.c, but bounded. Returns 0 if the call returned
- * normally (*out_rax holds its return value), 1 if it did not return within
- * CALL_MAX_STEPS steps (treated as "aborted, assume it's stuck/faulting"),
- * or -1 if a ptrace operation itself failed. Always restores the pre-call
- * registers before returning, in every case. */
-static int call_bounded(pid_t pid, intptr_t addr, uint64_t a0, uint64_t a1,
-                         uint64_t a2, long *out_rax) {
+/* Returns: 0 = call returned normally (*out_rax set); 1 = the tracee
+ * stopped on some other signal while running (treated as a fault, e.g.
+ * SIGSEGV on a protected page); 2 = could not plant the breakpoint (that
+ * address isn't writable via ptrace either -- itself a real finding);
+ * -1 = a ptrace operation failed outright. */
+static int call_breakpoint(pid_t pid, intptr_t addr, uint64_t a0, uint64_t a1,
+                            uint64_t a2, long *out_rax) {
     struct reg bak_reg, cur_reg;
+    intptr_t ret_target;
+    uint8_t orig_byte;
 
     if (pt_getregs(pid, &bak_reg)) return -1;
+
+    /* Whatever's currently at [rsp] is what the injected call's own `ret`
+     * will jump to -- we never push a return address ourselves. */
+    if (pt_copyout(pid, bak_reg.r_rsp, &ret_target, sizeof ret_target))
+        return -1;
+
+    orig_byte = (uint8_t)pt_getchar(pid, ret_target);
+    if (pt_setchar(pid, ret_target, (char)0xCC))
+        return 2; /* write failed: that address isn't writable via ptrace */
 
     cur_reg = bak_reg;
     cur_reg.r_rip = addr;
     cur_reg.r_rdi = a0;
     cur_reg.r_rsi = a1;
     cur_reg.r_rdx = a2;
-
-    if (pt_setregs(pid, &cur_reg)) return -1;
-
-    int ret = 1; /* assume stuck/faulting unless proven otherwise */
-    for (long i = 0; i < CALL_MAX_STEPS; i++) {
-        if (pt_step(pid)) { ret = -1; break; }
-        if (pt_getregs(pid, &cur_reg)) { ret = -1; break; }
-        if ((uint64_t)cur_reg.r_rsp > (uint64_t)bak_reg.r_rsp) {
-            if (out_rax) *out_rax = cur_reg.r_rax;
-            ret = 0;
-            break;
-        }
+    if (pt_setregs(pid, &cur_reg)) {
+        pt_setchar(pid, ret_target, (char)orig_byte);
+        return -1;
     }
 
-    /* Whatever happened, put the thread back exactly how we found it. */
+    if (pt_continue(pid, 0)) {
+        pt_setchar(pid, ret_target, (char)orig_byte);
+        pt_setregs(pid, &bak_reg);
+        return -1;
+    }
+
+    int status = 0;
+    pid_t w = -1;
+    long waited_us = 0;
+    while (waited_us < BP_TIMEOUT_US) {
+        w = waitpid(pid, &status, WNOHANG);
+        if (w == pid) break;
+        usleep(BP_POLL_INTERVAL_US);
+        waited_us += BP_POLL_INTERVAL_US;
+    }
+    if (w != pid) {
+        /* No stop within the soft timeout. There's no safe way to
+         * interrupt a running (not stopped) tracee from here, so a
+         * blocking wait is the only option left -- expected to resolve
+         * almost immediately in practice, since the call itself is a tiny,
+         * fast memcpy running at native speed, not single-stepped. */
+        w = waitpid(pid, &status, 0);
+    }
+
+    int ret;
+    long rax = 0;
+    if (w == pid && WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP) {
+        if (pt_getregs(pid, &cur_reg) == 0) rax = cur_reg.r_rax;
+        ret = 0;
+    } else if (w == pid && WIFSTOPPED(status)) {
+        ret = 1; /* stopped by some other signal: treat as a fault */
+    } else {
+        ret = -1;
+    }
+
+    /* Always clean up: remove the breakpoint byte and restore the exact
+     * pre-call register state, whatever happened. */
+    pt_setchar(pid, ret_target, (char)orig_byte);
     pt_setregs(pid, &bak_reg);
+
+    if (ret == 0 && out_rax) *out_rax = rax;
     return ret;
 }
 
@@ -265,10 +318,10 @@ static void probe_indirect_read(pid_t pid, intptr_t pad_base) {
 
     /* Control test first: copy from the window the earlier scan already
      * proved readable (pad_base+0x1c000). This validates the whole
-     * mechanism (mmap, injected call, bounded single-step loop, copyout)
-     * with zero new risk before touching anything unproven. */
+     * mechanism (mmap, injected call, breakpoint-based wait, copyout) with
+     * zero new risk before touching anything unproven. */
     intptr_t good_src = pad_base + 0x1c000;
-    int r = call_bounded(pid, memcpy_addr, (uint64_t)scratch, (uint64_t)good_src, sizeof local, &rax);
+    int r = call_breakpoint(pid, memcpy_addr, (uint64_t)scratch, (uint64_t)good_src, sizeof local, &rax);
     if (r == 0 && pt_copyout(pid, scratch, local, sizeof local) == 0) {
         uint8_t direct[256];
         int direct_ok = (pt_copyout(pid, good_src, direct, sizeof direct) == 0);
@@ -281,8 +334,10 @@ static void probe_indirect_read(pid_t pid, intptr_t pad_base) {
             return;
         }
     } else {
-        say("  control test (known-readable source): %s -- mechanism itself not confirmed, stopping here",
-            r == 1 ? "timed out (unexpected on memory we already know is readable)" : "ptrace error");
+        const char *why = r == 2 ? "could not plant the breakpoint (return address not writable via ptrace)"
+                         : r == 1 ? "the tracee stopped on an unexpected signal"
+                         : "a ptrace operation failed";
+        say("  control test (known-readable source): %s -- mechanism itself not confirmed, stopping here", why);
         pt_munmap(pid, scratch, 0x1000);
         return;
     }
@@ -290,13 +345,16 @@ static void probe_indirect_read(pid_t pid, intptr_t pad_base) {
     /* Real test: same call, reading from the very start of the module --
      * the region plain pt_copyout could not read at all in the scan above. */
     intptr_t suspect_src = pad_base;
-    r = call_bounded(pid, memcpy_addr, (uint64_t)scratch, (uint64_t)suspect_src, sizeof local, &rax);
-    if (r == 1) {
-        say("  protected-region test: memcpy did not return within %d single-steps -- "
-            "consistent with a read protection on that page that holds even for code "
-            "executing inside the process (no crash: the fault was never delivered, "
-            "the call was aborted and SceShellCore's registers were restored)",
-            CALL_MAX_STEPS);
+    r = call_breakpoint(pid, memcpy_addr, (uint64_t)scratch, (uint64_t)suspect_src, sizeof local, &rax);
+    if (r == 2) {
+        say("  protected-region test: could not even plant the breakpoint needed to run this "
+            "test (the return address wasn't writable via ptrace) -- inconclusive, not a fault "
+            "on the suspect region itself");
+    } else if (r == 1) {
+        say("  protected-region test: the call faulted (tracee stopped on a signal while "
+            "running, e.g. SIGSEGV) -- consistent with a read protection on that page that "
+            "holds even for code executing inside the process. Registers were restored "
+            "cleanly; nothing was left patched");
     } else if (r == -1) {
         say("  protected-region test: a ptrace operation failed mid-call -- inconclusive");
     } else if (pt_copyout(pid, scratch, local, sizeof local) == 0) {
