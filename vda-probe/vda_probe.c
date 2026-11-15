@@ -18,6 +18,13 @@
  *      addresses (via the SDK's kernel_dynlib_dlsym helper, which hashes the name to a
  *      NID internally) and prints them; it never calls them.
  *
+ *   3. If most of libScePad.sprx came back unreadable in (1): whether the bytes can
+ *      instead be read by making SceShellCore itself call memcpy() into a scratch
+ *      buffer we allocate (see probe_indirect_read()). This still never writes to any
+ *      file or system memory; it uses a bounded single-step loop (call_bounded()) so
+ *      that if the call hits a genuinely protected page, we abort and restore
+ *      SceShellCore's exact prior register state instead of letting anything crash.
+ *
  * It attaches briefly to SceShellCore via ptrace (ptrace helpers are a modified copy of
  * John Tornblom's pt.c/pt.h, GPL-3.0-or-later, already used elsewhere in this repo's
  * pad_rpc tooling) and always detaches again before exiting, even on error.
@@ -28,6 +35,8 @@
 #include <sys/proc.h>
 #include <sys/user.h>
 #include <sys/sysctl.h>
+#include <sys/mman.h>
+#include <machine/reg.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <stdbool.h>
@@ -118,17 +127,19 @@ static uint8_t *read_module(pid_t pid, intptr_t base, size_t *out_len) {
     return buf;
 }
 
-static void scan_pad_module(pid_t pid) {
+/* Returns the module's base address (so the caller can reuse it), or 0 if it
+ * couldn't be found/mapped. */
+static intptr_t scan_pad_module(pid_t pid) {
     uint32_t h_pad = 0;
     if (kernel_dynlib_handle(pid, PAD_MODULE, &h_pad) != 0 || !h_pad) {
         say("%s: not loaded in %s (normal if the shell hasn't touched a controller yet)",
             PAD_MODULE, TARGET_PROC);
-        return;
+        return 0;
     }
     intptr_t base = kernel_dynlib_mapbase_addr(pid, h_pad);
     if (!base) {
         say("%s: handle=0x%x but could not get its mapped base address", PAD_MODULE, h_pad);
-        return;
+        return 0;
     }
     say("%s: handle=0x%x base=%p -- scanning up to %d MB for the VDA signature...",
         PAD_MODULE, h_pad, (void *)base, SCAN_MAX / (1024 * 1024));
@@ -137,7 +148,7 @@ static void scan_pad_module(pid_t pid) {
     uint8_t *buf = read_module(pid, base, &len);
     if (!buf) {
         say("  malloc failed, skipping scan");
-        return;
+        return base;
     }
 
     int hits = 0;
@@ -157,6 +168,148 @@ static void scan_pad_module(pid_t pid) {
         say("  %d match(es) found -- signature still applies to this firmware's %s", hits, PAD_MODULE);
 
     free(buf);
+    return base;
+}
+
+/* --- indirect-read test ---------------------------------------------------
+ * Large parts of libScePad.sprx's mapping could not be read with a plain
+ * pt_copyout (see the scan above). This checks whether the same bytes can be
+ * read by instead making the *target process itself* call memcpy() to copy
+ * them into memory we control -- the technique Ghostpad's "hidDumper" tool
+ * used after finding that direct copyin/copyout into SceShellCore fails.
+ *
+ * Safety: the call is made through call_bounded() below, never the library's
+ * own pt_call(). If the injected call doesn't return within CALL_MAX_STEPS
+ * single-steps -- which is what happens if it faults trying to read a
+ * genuinely protected page, since pt_step() always passes signal 0 and so
+ * never lets that fault actually reach the process -- we give up, restore
+ * the exact register state SceShellCore had before we touched it, and carry
+ * on. Nothing is ever patched or written back into the target; the only
+ * memory we write to is a scratch page we ourselves just allocated.
+ */
+#define CALL_MAX_STEPS 200000
+
+/* Like pt_call() in pt.c, but bounded. Returns 0 if the call returned
+ * normally (*out_rax holds its return value), 1 if it did not return within
+ * CALL_MAX_STEPS steps (treated as "aborted, assume it's stuck/faulting"),
+ * or -1 if a ptrace operation itself failed. Always restores the pre-call
+ * registers before returning, in every case. */
+static int call_bounded(pid_t pid, intptr_t addr, uint64_t a0, uint64_t a1,
+                         uint64_t a2, long *out_rax) {
+    struct reg bak_reg, cur_reg;
+
+    if (pt_getregs(pid, &bak_reg)) return -1;
+
+    cur_reg = bak_reg;
+    cur_reg.r_rip = addr;
+    cur_reg.r_rdi = a0;
+    cur_reg.r_rsi = a1;
+    cur_reg.r_rdx = a2;
+
+    if (pt_setregs(pid, &cur_reg)) return -1;
+
+    int ret = 1; /* assume stuck/faulting unless proven otherwise */
+    for (long i = 0; i < CALL_MAX_STEPS; i++) {
+        if (pt_step(pid)) { ret = -1; break; }
+        if (pt_getregs(pid, &cur_reg)) { ret = -1; break; }
+        if ((uint64_t)cur_reg.r_rsp > (uint64_t)bak_reg.r_rsp) {
+            if (out_rax) *out_rax = cur_reg.r_rax;
+            ret = 0;
+            break;
+        }
+    }
+
+    /* Whatever happened, put the thread back exactly how we found it. */
+    pt_setregs(pid, &bak_reg);
+    return ret;
+}
+
+static intptr_t find_memcpy(pid_t pid, char *found_module, size_t cap) {
+    static const char *const candidates[] = {
+        "libkernel.sprx", "libSceLibcInternal.sprx", "libc.sprx",
+    };
+    for (size_t i = 0; i < sizeof candidates / sizeof *candidates; i++) {
+        uint32_t h = 0;
+        if (kernel_dynlib_handle(pid, candidates[i], &h) == 0 && h) {
+            intptr_t addr = kernel_dynlib_dlsym(pid, h, "memcpy");
+            if (addr) {
+                snprintf(found_module, cap, "%s", candidates[i]);
+                return addr;
+            }
+        }
+    }
+    return 0;
+}
+
+static void probe_indirect_read(pid_t pid, intptr_t pad_base) {
+    say("--- indirect-read test (memcpy executed inside %s via pt_call) ---", TARGET_PROC);
+
+    char mod[64] = {0};
+    intptr_t memcpy_addr = find_memcpy(pid, mod, sizeof mod);
+    if (!memcpy_addr) {
+        say("  could not resolve memcpy in any known module -- skipping");
+        return;
+    }
+    say("  memcpy found in %s at %p", mod, (void *)memcpy_addr);
+
+    intptr_t scratch = pt_mmap(pid, 0, 0x1000, PROT_READ | PROT_WRITE,
+                                MAP_ANON | MAP_PRIVATE, -1, 0);
+    if (!scratch || scratch == (intptr_t)-1) {
+        say("  pt_mmap failed -- skipping");
+        return;
+    }
+    say("  scratch buffer mapped at %p", (void *)scratch);
+
+    uint8_t local[256];
+    long rax = 0;
+
+    /* Control test first: copy from the window the earlier scan already
+     * proved readable (pad_base+0x1c000). This validates the whole
+     * mechanism (mmap, injected call, bounded single-step loop, copyout)
+     * with zero new risk before touching anything unproven. */
+    intptr_t good_src = pad_base + 0x1c000;
+    int r = call_bounded(pid, memcpy_addr, (uint64_t)scratch, (uint64_t)good_src, sizeof local, &rax);
+    if (r == 0 && pt_copyout(pid, scratch, local, sizeof local) == 0) {
+        uint8_t direct[256];
+        int direct_ok = (pt_copyout(pid, good_src, direct, sizeof direct) == 0);
+        int same = direct_ok && memcmp(local, direct, sizeof local) == 0;
+        say("  control test (known-readable source): memcpy returned, rax=0x%lx, bytes %s direct read",
+            rax, same ? "MATCH" : "differ from");
+        if (!same) {
+            say("  mechanism not validated -- stopping here rather than trust the next test");
+            pt_munmap(pid, scratch, 0x1000);
+            return;
+        }
+    } else {
+        say("  control test (known-readable source): %s -- mechanism itself not confirmed, stopping here",
+            r == 1 ? "timed out (unexpected on memory we already know is readable)" : "ptrace error");
+        pt_munmap(pid, scratch, 0x1000);
+        return;
+    }
+
+    /* Real test: same call, reading from the very start of the module --
+     * the region plain pt_copyout could not read at all in the scan above. */
+    intptr_t suspect_src = pad_base;
+    r = call_bounded(pid, memcpy_addr, (uint64_t)scratch, (uint64_t)suspect_src, sizeof local, &rax);
+    if (r == 1) {
+        say("  protected-region test: memcpy did not return within %d single-steps -- "
+            "consistent with a read protection on that page that holds even for code "
+            "executing inside the process (no crash: the fault was never delivered, "
+            "the call was aborted and SceShellCore's registers were restored)",
+            CALL_MAX_STEPS);
+    } else if (r == -1) {
+        say("  protected-region test: a ptrace operation failed mid-call -- inconclusive");
+    } else if (pt_copyout(pid, scratch, local, sizeof local) == 0) {
+        char ctx[3 * 32 + 1];
+        hexdump_line(ctx, sizeof ctx, local, 32);
+        say("  protected-region test: memcpy RETURNED (rax=0x%lx) -- first 32 bytes: %s", rax, ctx);
+        say("  (non-zero/structured bytes here would mean in-process execution CAN read this "
+            "region even though a direct ptrace peek cannot)");
+    } else {
+        say("  protected-region test: memcpy returned but the scratch buffer couldn't be read back -- inconclusive");
+    }
+
+    pt_munmap(pid, scratch, 0x1000);
 }
 
 static void resolve_mbus(pid_t pid) {
@@ -213,8 +366,9 @@ int main(void) {
         return 1;
     }
 
-    scan_pad_module(pid);
+    intptr_t pad_base = scan_pad_module(pid);
     resolve_mbus(pid);
+    if (pad_base) probe_indirect_read(pid, pad_base);
 
     pt_detach(pid, 0);
     say("=== done, detached from %s cleanly ===", TARGET_PROC);
