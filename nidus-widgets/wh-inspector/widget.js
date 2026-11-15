@@ -1,10 +1,12 @@
-// wh-inspector v11: v10 only ever saw 18 createElement calls before the hub restarted --
-// too few for a whole screen. Modern RN/Babel bundles usually compile JSX to jsx()/jsxs()
-// from the 'react/jsx-runtime' module instead of React.createElement, so our hook was
-// likely only catching NiDUS's own internal widget rendering, not the Hub's real screens.
-// v11 keeps the createElement hook AND additionally scans base_dll.c for the jsx-runtime
-// module (exports.jsx / exports.jsxs as functions) and patches those the same way --
-// same (type, props, key) signature, same store-detection logic. Still fully read-only.
+// wh-inspector v12: NEW DIRECTION. Instead of hunting for where the text is rendered,
+// patch VshNMPsnAccountModule.IsSignedIn / .GetState directly. These promises NEVER
+// resolve or reject on this console (confirmed by v5) -- they just hang forever, which
+// is plausibly what drives the Hub's restart loop. v12 wraps each one: call the REAL
+// function first; if it hasn't settled within ~1.5s, resolve with a guessed fallback
+// value instead (logged clearly as "FALLBACK used", vs "REAL result" if the original
+// ever does answer). This does not fake a real PSN session -- it only unblocks whatever
+// JS code is waiting on these two specific promises, so the Hub can proceed (or hit a
+// different, more informative stall further down).
 (function (wh) {
   var root = globalThis;
 
@@ -26,121 +28,93 @@
 
   var runs = (root.__wh_insp_runs || 0) + 1;
   root.__wh_insp_runs = runs;
-  send('=== v11 run #' + runs + ' ===');
+  send('=== v12 run #' + runs + ' ===');
 
-  function safeKeys(o) {
-    try { return Object.keys(o); } catch (e) { return []; }
-  }
-  function looksLikeStore(o) {
-    return !!o && typeof o === 'object'
-      && typeof o.getState === 'function'
-      && typeof o.dispatch === 'function'
-      && typeof o.subscribe === 'function';
-  }
+  function raceWithTimeout(origFn, thisArg, fallbackValue, label, timeoutMs) {
+    return function () {
+      var args = arguments;
+      var settled = false;
+      return new Promise(function (resolve) {
+        var timer = setTimeout(function () {
+          if (settled) return;
+          settled = true;
+          send(label + ': FALLBACK used = ' + JSON.stringify(fallbackValue));
+          resolve(fallbackValue);
+        }, timeoutMs);
 
-  var seen = [];
-  var count = 0;
-  var MAX_STORES = 10;
-
-  function briefReport(store, where, idx) {
-    var state;
-    try { state = store.getState(); } catch (e) { send('STORE#' + idx + ' via ' + where + ': getState threw ' + (e && e.message ? e.message : e)); return; }
-    if (!state || typeof state !== 'object') { send('STORE#' + idx + ' via ' + where + ': state not object'); return; }
-    var topKeys = safeKeys(state);
-    send('STORE#' + idx + ' via ' + where + ' keys: ' + topKeys.join(','));
-    var interesting = topKeys.filter(function (k) { return /sign|auth|login|connect|account|psn|user/i.test(k); });
-    if (interesting.length) {
-      interesting.slice(0, 4).forEach(function (k) {
-        var sub = state[k], out;
+        var r;
         try {
-          if (sub && typeof sub === 'object') {
-            out = safeKeys(sub).slice(0, 12).map(function (sk) {
-              var v = sub[sk], t = typeof v;
-              var vs = t === 'object' && v ? '{' + safeKeys(v).slice(0, 8).join(',') + '}' : (t === 'function' ? 'fn' : String(v));
-              return sk + '=' + vs;
-            }).join(' | ');
-          } else { out = String(sub); }
-        } catch (e) { out = 'err:' + (e && e.message ? e.message : e); }
-        send('STORE#' + idx + '.' + k + ' -> ' + String(out).slice(0, 260));
-      });
-    }
-  }
-
-  function tryStore(candidate, label) {
-    if (!looksLikeStore(candidate)) return false;
-    for (var i = 0; i < seen.length; i++) if (seen[i] === candidate) return true;
-    if (count >= MAX_STORES) return true;
-    seen.push(candidate);
-    count++;
-    briefReport(candidate, label, count);
-    return true;
-  }
-
-  function checkProps(props, tag, n) {
-    if (!props) return;
-    try {
-      if (props.store) tryStore(props.store, tag + ' props.store (#' + n + ')');
-      else if (props.value) {
-        if (!tryStore(props.value, tag + ' props.value (#' + n + ')')) {
-          if (typeof props.value === 'object') tryStore(props.value.store, tag + ' props.value.store (#' + n + ')');
+          r = origFn.apply(thisArg, args);
+        } catch (e) {
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            send(label + ': original threw sync, using FALLBACK = ' + JSON.stringify(fallbackValue) + ' (err: ' + (e && e.message ? e.message : e) + ')');
+            resolve(fallbackValue);
+          }
+          return;
         }
-      }
-    } catch (e) {
-      send('hook error (' + tag + '): ' + (e && e.message ? e.message : e));
-    }
-  }
 
-  function wrap(fn, tag, counterRef) {
-    return function (type, props) {
-      if (counterRef.n < counterRef.max && count < MAX_STORES) {
-        counterRef.n++;
-        checkProps(props, tag, counterRef.n);
-      }
-      return fn.apply(this, arguments);
+        if (r && typeof r.then === 'function') {
+          r.then(function (v) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            send(label + ': REAL result = ' + JSON.stringify(v));
+            resolve(v);
+          }, function (e) {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            send(label + ': real promise REJECTED (' + (e && e.message ? e.message : e) + '), using FALLBACK = ' + JSON.stringify(fallbackValue));
+            resolve(fallbackValue);
+          });
+        } else {
+          // not a promise at all -- pass the real synchronous value straight through
+          if (!settled) {
+            settled = true;
+            clearTimeout(timer);
+            send(label + ': REAL sync result = ' + JSON.stringify(r));
+            resolve(r);
+          }
+        }
+      });
     };
   }
 
   try {
-    if (!wh || !wh.React) { send('abort: wh/React missing'); return; }
+    if (!wh) { send('abort: wh missing'); return; }
+    var base = root.base_dll;
+    if (typeof base !== 'function' || !base.c) { send('base_dll missing'); return; }
 
-    if (root.__wh_insp11_hooked) {
-      send('hooks already installed (persisted), run #' + runs);
+    if (root.__wh_insp12_patched) {
+      send('already patched (persisted), run #' + runs);
     } else {
-      root.__wh_insp11_hooked = true;
-
-      var React = wh.React;
-      var ceCounter = { n: 0, max: 6000 };
-      if (typeof React.createElement === 'function') {
-        var origCE = React.createElement;
-        React.createElement = wrap(origCE, 'createElement', ceCounter);
-        send('createElement hooked');
-      } else {
-        send('createElement missing on wh.React');
+      var ids = Object.getOwnPropertyNames(base.c), nm = null;
+      for (var i = 0; i < ids.length && !nm; i++) {
+        var ex;
+        try { ex = base.c[ids[i]].exports; } catch (e) { continue; }
+        if (ex && typeof ex === 'object' && ex.NativeModules) nm = ex.NativeModules;
       }
+      if (!nm) { send('NativeModules not found'); return; }
 
-      var base = root.base_dll;
-      if (typeof base === 'function' && base.c) {
-        var ids = Object.getOwnPropertyNames(base.c);
-        var jsxHooked = 0;
-        for (var i = 0; i < ids.length; i++) {
-          var ex;
-          try { ex = base.c[ids[i]].exports; } catch (e) { continue; }
-          if (!ex || typeof ex !== 'object') continue;
-          ['jsx', 'jsxs', 'jsxDEV'].forEach(function (fname) {
-            if (typeof ex[fname] === 'function' && !ex[fname].__wh_wrapped) {
-              var origFn = ex[fname];
-              var ctr = { n: 0, max: 6000 };
-              var wrapped = wrap(origFn, 'module ' + ids[i] + '.' + fname, ctr);
-              wrapped.__wh_wrapped = true;
-              ex[fname] = wrapped;
-              jsxHooked++;
-            }
-          });
+      var patched = 0;
+      if (nm.VshNMPsnAccountModule) {
+        var acc = nm.VshNMPsnAccountModule;
+        if (typeof acc.IsSignedIn === 'function') {
+          acc.IsSignedIn = raceWithTimeout(acc.IsSignedIn, acc, true, 'IsSignedIn', 1500);
+          patched++;
         }
-        send('jsx-runtime style hooks installed on ' + jsxHooked + ' export(s) across ' + ids.length + ' modules');
+        if (typeof acc.GetState === 'function') {
+          acc.GetState = raceWithTimeout(acc.GetState, acc, 'SIGNED_IN', 'GetState', 1500);
+          patched++;
+        }
       } else {
-        send('base_dll missing, cannot scan for jsx-runtime');
+        send('VshNMPsnAccountModule not present on nm');
       }
+
+      root.__wh_insp12_patched = true;
+      send('patched ' + patched + ' PSN account function(s), timeout=1500ms');
     }
 
     if (wh.register) {
@@ -148,7 +122,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    send('v11 init complete, run #' + runs);
+    send('v12 init complete, run #' + runs);
   } catch (e) {
     send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
