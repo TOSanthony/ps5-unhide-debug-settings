@@ -379,7 +379,26 @@ int main(void) {
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_ANY);
     addr.sin_port = htons(DASH_PORT);
-    if (bind(srv, (struct sockaddr *)&addr, sizeof addr) != 0 || listen(srv, 4) != 0) {
+    int bound = bind(srv, (struct sockaddr *)&addr, sizeof addr) == 0;
+    if (!bound) {
+        /* A previous dashboard is still running: ask it to quit, then take over. */
+        int c = socket(AF_INET, SOCK_STREAM, 0);
+        struct sockaddr_in lo = addr;
+        lo.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+        if (c >= 0 && connect(c, (struct sockaddr *)&lo, sizeof lo) == 0) {
+            static const char q[] = "POST /api/quit HTTP/1.1\r\nHost: localhost\r\nX-Menu: 1\r\nContent-Length: 0\r\n\r\n";
+            send_all(c, q, sizeof q - 1);
+            char tmp[128];
+            recv(c, tmp, sizeof tmp, 0);
+            appdb_say("Previous dashboard asked to quit.");
+        }
+        if (c >= 0) close(c);
+        for (int i = 0; i < 20 && !bound; i++) {
+            usleep(250000);
+            bound = bind(srv, (struct sockaddr *)&addr, sizeof addr) == 0;
+        }
+    }
+    if (!bound || listen(srv, 4) != 0) {
         appdb_say("Port %d unavailable (dashboard already running?): %s", DASH_PORT, strerror(errno));
         close(srv);
         return 1;
