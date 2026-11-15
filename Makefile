@@ -5,7 +5,7 @@ else
 endif
 
 # Needs sqlite3.c + sqlite3.h (SQLite "amalgamation") in this folder.
-ELFS := welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf pad_probe.elf
+ELFS := welcome_hub.elf toggle_store.elf icon_menu.elf dashboard.elf pad_probe.elf pad_rpc.elf
 CFLAGS := -O2 -Wall -I. \
 	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
 	-DSQLITE_OMIT_SHARED_CACHE -DSQLITE_TEMP_STORE=3
@@ -29,6 +29,9 @@ dashboard.elf: dashboard/dashboard.c dashboard/dashboard_page.h appdb.h sqlite3.
 
 pad_probe.elf: pad_probe.c
 	$(CC) $(CFLAGS) -o $@ pad_probe.c -lScePad -lSceUserService
+
+pad_rpc.elf: pad_rpc/pad_rpc.c pad_rpc/pt/pt.c
+	$(CC) -Wall -O2 -Ipad_rpc -o $@ pad_rpc/pad_rpc.c pad_rpc/pt/pt.c -lSceNotification
 
 clean:
 	rm -f $(ELFS) sqlite3.o
