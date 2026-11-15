@@ -16,6 +16,7 @@
 #include <netinet/in.h>
 #include <dlfcn.h>
 #include <signal.h>
+#include <sys/stat.h>
 #include <sys/wait.h>
 #include <fcntl.h>
 #include <sys/select.h>
@@ -102,23 +103,46 @@ static size_t json_str_nl(char *out, size_t cap, size_t off, const char *s);
  * system libraries/functions needed for controller battery and trophies can be reached.
  * It only resolves symbols; it calls none of them. */
 static void probe_run(FILE *o) {
-    static const char *libs[] = {"libSceUserService.sprx", "libScePad.sprx", "libSceNpTrophy.sprx",
-                                 "libSceNpTrophy2.sprx", "libSceSystemService.sprx"};
+    static const char *names[] = {"libSceUserService", "libScePad", "libSceNpTrophy",
+                                  "libSceNpTrophy2", "libSceSystemService"};
+    static const char *dirs[] = {"/system/common/lib/", "/system/priv/lib/", "/system_ex/common_ex/lib/",
+                                 "/system_ex/priv_ex/lib/", "/system/vsh/", ""};
     static const char *syms[] = {"sceUserServiceInitialize", "sceUserServiceGetLoginUserIdList",
                                  "scePadInit", "scePadGetHandle", "scePadGetControllerInformation",
                                  "scePadReadState", "sceNpTrophyCreateContext",
-                                 "sceNpTrophyGetGameProgress", "sceSystemServiceGetStatus"};
-    for (size_t i = 0; i < sizeof libs / sizeof *libs; i++) {
-        void *h = dlopen(libs[i], RTLD_LAZY);
-        fprintf(o, "lib %s: %s\n", libs[i], h ? "OK" : "absent");
-        fflush(o);
-        if (!h) continue;
-        for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
-            if (dlsym(h, syms[j])) fprintf(o, "  sym %s: OK\n", syms[j]);
+                                 "sceNpTrophyGetGameProgress", "sceSystemServiceGetStatus",
+                                 "sceKernelLoadStartModule"};
+    for (size_t d = 0; d < sizeof dirs / sizeof *dirs; d++) {
+        struct stat st;
+        fprintf(o, "dir %s: %s\n", dirs[d][0] ? dirs[d] : "(none)", dirs[d][0] && stat(dirs[d], &st) == 0 ? "exists" : "-");
+    }
+    fflush(o);
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        int ok = 0;
+        for (size_t d = 0; d < sizeof dirs / sizeof *dirs && !ok; d++) {
+            const char *ext[] = {".sprx", ".prx", ""};
+            for (size_t e = 0; e < 3 && !ok; e++) {
+                char path[160];
+                struct stat st;
+                snprintf(path, sizeof path, "%s%s%s", dirs[d], names[i], ext[e]);
+                int exists = dirs[d][0] && stat(path, &st) == 0;
+                void *h = dlopen(path, RTLD_LAZY);
+                if (exists || h) fprintf(o, "%s: file=%s dlopen=%s%s%s\n", path, exists ? "yes" : "no",
+                                         h ? "OK" : "fail", h ? "" : " ", h ? "" : (dlerror() ? "" : ""));
+                fflush(o);
+                if (h) {
+                    ok = 1;
+                    for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
+                        if (dlsym(h, syms[j])) fprintf(o, "  sym %s: OK\n", syms[j]);
+                    fflush(o);
+                }
+            }
+        }
+        if (!ok) fprintf(o, "%s: not loadable\n", names[i]);
         fflush(o);
     }
     for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
-        if (dlsym(RTLD_DEFAULT, syms[j])) fprintf(o, "global sym %s: OK\n", syms[j]);
+        fprintf(o, "global %s: %s\n", syms[j], dlsym(RTLD_DEFAULT, syms[j]) ? "OK" : "-");
     fprintf(o, "end\n");
 }
 
