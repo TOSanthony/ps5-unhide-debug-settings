@@ -147,6 +147,7 @@ static uint32_t module_handle(pid_t pid, const char *base) {
 }
 
 static uint32_t probe_process(pid_t pid, const char *name) {
+    if (strcmp(name, "SceShellUI")) return 0;   /* only the home screen: the one process known to work */
     uint32_t h_pad = module_handle(pid, "libScePad");
     if (!h_pad)
         return 0;
@@ -202,22 +203,27 @@ static uint32_t probe_process(pid_t pid, const char *name) {
             break;
         }
         say("  handle valido = 0x%08x, leyendo %d s...", handle, READ_SECS);
-        intptr_t get_info = kernel_dynlib_resolve(pid, h_pad, NID_scePadGetControllerInformation);
-        if (get_info) {
-            uint8_t info[0x40];
-            memset(info, 0, sizeof info);
-            pt_copyin(pid, info, scratch + 0x1000, sizeof info);
-            long irc = pt_call(pid, get_info, (uint64_t)(unsigned)handle, (uint64_t)(scratch + 0x1000));
-            say("  scePadGetControllerInformation rc=0x%lx", irc);
-            if (!pt_copyout(pid, scratch + 0x1000, info, sizeof info)) {
-                char hex[sizeof info * 2 + 1];
-                for (size_t i = 0; i < sizeof info; i++) snprintf(hex + i * 2, 3, "%02x", info[i]);
-                say("    info %s", hex);
+        {
+            /* Functions taking (handle, out buffer), resolved by name. Output zero-filled first. */
+            static const char *const names[] = {"scePadGetControllerInformation",
+                "scePadGetExtControllerInformation", "scePadReadStateExt", "scePadReadForTracker"};
+            for (size_t k = 0; k < sizeof names / sizeof *names; k++) {
+                intptr_t fn = kernel_dynlib_dlsym(pid, h_pad, names[k]);
+                if (!fn) { say("  %s no resuelta", names[k]); continue; }
+                uint8_t out[0xc0];
+                memset(out, 0, sizeof out);
+                pt_copyin(pid, out, scratch + 0x1000, sizeof out);
+                long rc = pt_call(pid, fn, (uint64_t)(unsigned)handle, (uint64_t)(scratch + 0x1000));
+                say("  %s rc=0x%lx", names[k], rc);
+                if (!pt_copyout(pid, scratch + 0x1000, out, sizeof out)) {
+                    for (size_t o = 0; o < sizeof out; o += 0x40) {
+                        char hex[0x40 * 2 + 1];
+                        for (size_t i = 0; i < 0x40; i++) snprintf(hex + i * 2, 3, "%02x", out[o + i]);
+                        say("    out%02zx %s", k, hex);
+                    }
+                }
             }
-        } else {
-            say("  scePadGetControllerInformation no resuelta");
         }
-
         pad_view_t last = {0}, cur;
         uint8_t raw[0x80];
         int events = 0, reads_ok = 0;
