@@ -6,27 +6,17 @@ l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 
 | Payload | Effet |
 |---|---|
-| `welcome_hub.elf` | met `visible=1` pour `NPXS40063` (Welcome Hub) |
-| `toggle_store.elf` | **bascule** l'icône PlayStation Store (`NPXS40047`) : la cache si elle est visible, la réaffiche si elle est cachée |
 | `dashboard.elf` | **tableau de bord web** en cartes (port 8096), avec interrupteurs d'affichage |
-| `icon_menu.elf` | **menu web avec interrupteurs** pour afficher/masquer le PlayStation Store, le Welcome Hub et PlayStation Plus |
 
 ### Tableau de bord `dashboard.elf`
 
-Page web en cartes (horloge, stockage de la console, météo, état des tuiles de l'accueil, état d'Orbit Store, raccourcis), à ouvrir depuis un téléphone ou un PC : `http://<IP de la PS5>:8096/`. Des interrupteurs sur la page affichent/masquent le Store, le Welcome Hub et PlayStation Plus, et épinglent/désépinglent Orbit Store (sauvegarde de `app.db` une fois par lancement ; redémarre la PS5 pour appliquer ; le maintien du verrou d'Orbit reste assuré par `icon_menu.elf`). Pas de batterie des manettes ni de trophées pour l'instant. Raccourcis personnalisés : `/data/dashboard_links.txt` (une ligne `Nom|http://...`). Météo : `/data/dashboard_weather.txt` (`latitude,longitude,Ville`, Paris par défaut ; la météo est récupérée par le navigateur via Open-Meteo). Arrêt : `POST /api/quit` avec l'en-tête `X-Menu: 1`. Ce n'est pas une tuile native de l'écran d'accueil : la page s'ouvre dans un navigateur.
+Page web en cartes (horloge, stockage de la console, météo, état des tuiles de l'accueil, état d'Orbit Store, raccourcis), à ouvrir depuis un téléphone ou un PC : `http://<IP de la PS5>:8096/`. Des interrupteurs sur la page affichent/masquent le Store, le Welcome Hub et PlayStation Plus, et épinglent/désépinglent Orbit Store (sauvegarde de `app.db` une fois par lancement ; redémarre la PS5 pour appliquer). Activer le Welcome Hub déploie aussi automatiquement le widget `hub-signin-patch` (voir plus bas) ; le désactiver le retire. Pas de batterie des manettes ni de trophées pour l'instant. Raccourcis personnalisés : `/data/dashboard_links.txt` (une ligne `Nom|http://...`). Météo : `/data/dashboard_weather.txt` (`latitude,longitude,Ville`, Paris par défaut ; la météo est récupérée par le navigateur via Open-Meteo). Arrêt : `POST /api/quit` avec l'en-tête `X-Menu: 1`. Ce n'est pas une tuile native de l'écran d'accueil : la page s'ouvre dans un navigateur.
 
-### Menu `icon_menu.elf`
+**Note :** `dashboard.elf` épingle/verrouille Orbit Store mais ne maintient plus le verrou en continu (ce rôle était tenu par `icon_menu.elf`, retiré du dépôt). Si un jeu lancé ensuite repasse devant Orbit Store dans la liste, relance simplement l'interrupteur « épingler » depuis le tableau de bord pour reverrouiller.
 
-Lance l'ELF : une notification et la sortie standard affichent l'adresse `http://<IP de la PS5>:8095/`.
-Ouvre-la depuis un téléphone ou un PC du même réseau, utilise les interrupteurs, puis redémarre la console.
-Au lancement, `icon_menu.elf` applique les réglages de base : PlayStation Plus, PlayStation Store et Welcome Hub masqués, Orbit Store épinglé et verrouillé à gauche (seules les lignes qui diffèrent sont modifiées, avec sauvegarde). Les interrupteurs restent utilisables ensuite.
-Un interrupteur épingle Orbit Store (`PPSA99177`) comme le PlayStation Store : l'entrée est rangée dans le
-groupe système (`dispLocation=146`, `pinnedStatus=2`, même `primaryTitleSort` que les apps système, sinon la console
-le trie avec les jeux) et il est **verrouillé** comme avec « Lock order » de [PSGFX](https://github.com/elripalda/psgfx) (GPL-3.0) : `lastAccessIndex`/`lastPlayedIndex` à 1 000 000 000 et dates en 2099 dans `tbl_iconinfo_*`, `tbl_concepticoninfo_*`, `tbl_contentinfo` et `tbl_conceptmetadata`, sans toucher au compteur `tbl_version`, donc un jeu lancé ensuite ne passe plus devant. Comme la console réécrit l'index d'une app quand on la lance (ce qui casse le verrou), le menu, tant qu'il tourne, vérifie toutes les 2 s et remet le verrou. Il faut donc laisser `icon_menu.elf` lancé (sans « Arrêter le menu »). En le désactivant, elle retourne dans la rangée des jeux (`dispLocation=138`). Non testé sur console :
-la sauvegarde `/data/app.db.*.bak` permet de revenir en arrière. Bouton « Arrêter le menu » pour libérer le port avant de relancer. Le menu n'a pas de mot de passe :
-ne le laisse pas tourner sur un réseau que tu ne maîtrises pas. `app.db` est sauvegardé une fois par lancement.
+**Payload auto-embarqué (hors dépôt) :** `dashboard.elf` peut aussi lancer automatiquement, au démarrage, un second payload qui lui est collé à la fin du fichier (format `[ELF additionnel][magic "DASHEMB1"][longueur 8 octets LE]`, lu via `/proc/curproc/file`). Ce mécanisme sert à embarquer un binaire tiers (ex. NiDUS) sans jamais committer son contenu sur GitHub : la fusion se fait uniquement en local, jamais dans ce dépôt.
 
-Redémarre la console après l'exécution. Ne les utilise que sur ta propre console.
+Redémarre la console après l'exécution. Ne l'utilise que sur ta propre console.
 Code commun (sauvegarde, accès SQLite) : `appdb.h`.
 
 ## Build via GitHub Actions
@@ -42,6 +32,6 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 make
 ```
 
-### Widget NiDUS `nidus-widgets/wh-inspector`
+### Widget NiDUS `nidus-widgets/hub-signin-patch`
 
-Widget de diagnostic pour [NiDUS](https://github.com/manchildtechnologies-ui/NiDUS) : il ne dessine rien d'utile, il écrit dans `/data/wh-widgets/wh.log` ce que contient l'exécution du Welcome Hub (modules natifs, textes affichés, d'où vient le texte « Se connecter »), pour trouver le test de connexion PSN. Copier le dossier dans `/data/wh-widgets/`, ouvrir le Welcome Hub, puis lire `wh.log` (lignes `[widget:wh-inspector]`). Lecture seule : il ne modifie aucun fichier de la console.
+Widget pour [NiDUS](https://github.com/manchildtechnologies-ui/NiDUS) qui force `VshNMPsnAccountModule.IsSignedIn`/`GetState` à répondre « connecté » côté Welcome Hub, pour débloquer l'écran « Se connecter » sans mise à jour du firmware (purement local, aucune connexion réseau/PSN réelle). Son code source (`config.json`, `widget.js`) est embarqué dans `dashboard.elf` via `dashboard/hub_patch_files.h` (généré par `dashboard/gen_hub_patch.py`) et déployé/retiré automatiquement par l'interrupteur Welcome Hub du tableau de bord — pas besoin de le copier à la main.
