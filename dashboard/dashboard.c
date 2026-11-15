@@ -5,7 +5,8 @@
  * home-screen tiles, Orbit Store state, shortcuts), styled as cards like the Welcome
  * Hub. Open  http://<IP de la PS5>:8096/  from a phone or a PC on the same network.
  *
- * Read-only: it never writes app.db.
+ * app.db is only written when you flip a switch on the page (show/hide a home-screen tile,
+ * pin Orbit Store); a backup is made once per run. Reboot the console to apply.
  *
  * Optional configuration files on the console:
  *   /data/dashboard_links.txt    one shortcut per line:  Label|http://...
@@ -40,7 +41,57 @@ static const tile_t TILES[] = {
 #define ORBIT_ID "PPSA99177"
 
 static int g_quit = 0;
+static int g_backed_up = 0;
 static time_t g_start = 0;
+
+static int backup_once(void) {
+    if (g_backed_up) return 0;
+    if (appdb_backup() != 0) return -1;
+    g_backed_up = 1;
+    return 0;
+}
+
+static int set_tile(const char *title_id, int value) {
+    sqlite3 *db = appdb_open();
+    if (!db) return -1;
+    int total = 0, vis = 0;
+    if (appdb_count(db, title_id, &total, &vis) != 0 || total == 0 || backup_once() != 0) {
+        sqlite3_close(db);
+        return -1;
+    }
+    int changed = appdb_set_visible(db, title_id, value);
+    sqlite3_close(db);
+    if (changed >= 0) appdb_say("%s: %s (%d row(s)). Reboot to apply.", title_id, value ? "SHOWN" : "HIDDEN", changed);
+    return changed;
+}
+
+static int set_orbit(int on) {
+    sqlite3 *db = appdb_open();
+    if (!db) return -1;
+    int pinned = 0;
+    if (!appdb_system_state(db, ORBIT_ID, &pinned) || backup_once() != 0) { sqlite3_close(db); return -1; }
+    int changed = appdb_set_system_pin(db, ORBIT_ID, on);
+    if (changed >= 0 && appdb_set_lock(db, ORBIT_ID, on) != 0) changed = -1;
+    sqlite3_close(db);
+    if (changed >= 0) appdb_say("Orbit Store: %s. Reboot to apply.", on ? "PINNED + LOCKED" : "UNPINNED");
+    return changed;
+}
+
+static void query_get(const char *query, const char *key, char *out, size_t n) {
+    size_t kl = strlen(key);
+    out[0] = 0;
+    for (const char *p = query; p && *p;) {
+        if (!strncmp(p, key, kl) && p[kl] == '=') {
+            p += kl + 1;
+            size_t i = 0;
+            while (*p && *p != '&' && i + 1 < n) out[i++] = *p++;
+            out[i] = 0;
+            return;
+        }
+        p = strchr(p, '&');
+        if (p) p++;
+    }
+}
 
 static void send_all(int fd, const char *p, size_t n) {
     while (n) {
@@ -147,8 +198,8 @@ static void info_json(char *out, size_t cap, const char *ip) {
     for (size_t i = 0; i < N_TILES; i++) {
         int t = 0, v = 0;
         if (db) appdb_count(db, TILES[i].title_id, &t, &v);
-        off += (size_t)snprintf(out + off, cap - off, "%s{\"label\":\"%s\",\"visible\":%s}",
-                                i ? "," : "", TILES[i].label, v > 0 ? "true" : "false");
+        off += (size_t)snprintf(out + off, cap - off, "%s{\"id\":\"%s\",\"label\":\"%s\",\"found\":%s,\"visible\":%s}",
+                                i ? "," : "", TILES[i].title_id, TILES[i].label, t > 0 ? "true" : "false", v > 0 ? "true" : "false");
     }
     int pinned = 0, found = db ? appdb_system_state(db, ORBIT_ID, &pinned) : 0;
     off += (size_t)snprintf(out + off, cap - off, "],\"orbit\":{\"found\":%s,\"pinned\":%s},",
@@ -196,6 +247,8 @@ static void handle(int fd) {
     req[n] = 0;
     char method[8], path[256];
     if (sscanf(req, "%7s %255s", method, path) != 2) return;
+    char *query = strchr(path, '?');
+    if (query) *query++ = 0;
 
     if (!strcmp(method, "GET") && !strcmp(path, "/")) {
         reply(fd, 200, "text/html; charset=utf-8", PAGE);
@@ -205,6 +258,18 @@ static void handle(int fd) {
         local_ip(ip, sizeof ip);
         info_json(buf, sizeof buf, ip);
         reply(fd, 200, "application/json", buf);
+    } else if (!strcmp(method, "POST") && (!strcmp(path, "/api/set") || !strcmp(path, "/api/orbit"))) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        char id[16], v[4];
+        query_get(query ? query : "", "id", id, sizeof id);
+        query_get(query ? query : "", "v", v, sizeof v);
+        if (strcmp(v, "0") && strcmp(v, "1")) { reply(fd, 400, "text/plain", "bad params"); return; }
+        int r = -1;
+        if (!strcmp(path, "/api/orbit")) r = set_orbit(v[0] == '1');
+        else for (size_t i = 0; i < N_TILES; i++)
+            if (!strcmp(id, TILES[i].title_id)) r = set_tile(id, v[0] == '1');
+        if (r < 0) reply(fd, 500, "text/plain", "failed");
+        else reply(fd, 200, "application/json", "{\"ok\":true}");
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/quit")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         g_quit = 1;
