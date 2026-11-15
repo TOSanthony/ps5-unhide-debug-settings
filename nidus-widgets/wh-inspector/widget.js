@@ -1,12 +1,12 @@
-// wh-inspector v12: NEW DIRECTION. Instead of hunting for where the text is rendered,
-// patch VshNMPsnAccountModule.IsSignedIn / .GetState directly. These promises NEVER
-// resolve or reject on this console (confirmed by v5) -- they just hang forever, which
-// is plausibly what drives the Hub's restart loop. v12 wraps each one: call the REAL
-// function first; if it hasn't settled within ~1.5s, resolve with a guessed fallback
-// value instead (logged clearly as "FALLBACK used", vs "REAL result" if the original
-// ever does answer). This does not fake a real PSN session -- it only unblocks whatever
-// JS code is waiting on these two specific promises, so the Hub can proceed (or hit a
-// different, more informative stall further down).
+// wh-inspector v13: v12 proved GetState() actually answers fine and fast with the REAL
+// value {"state":"signedOut"} -- not a hang. So the Hub is correctly reporting that this
+// console has no active PSN session; it isn't broken. v13 goes further and FORCES a fake
+// local answer regardless of the real one: IsSignedIn() -> true, GetState() -> {"state":
+// "signedIn"}. This stays 100% local (no contact with Sony's servers, no bypass of any
+// server-side check) -- it only changes what THIS screen's own UI gate believes. Expect
+// partial results: cards that need a real authenticated network call (friends, online
+// trophies, activity) will likely still fail or hang, since this patch can't fabricate
+// an actual PSN session server-side.
 (function (wh) {
   var root = globalThis;
 
@@ -28,57 +28,23 @@
 
   var runs = (root.__wh_insp_runs || 0) + 1;
   root.__wh_insp_runs = runs;
-  send('=== v12 run #' + runs + ' ===');
+  send('=== v13 run #' + runs + ' ===');
 
-  function raceWithTimeout(origFn, thisArg, fallbackValue, label, timeoutMs) {
+  function forceFake(origFn, thisArg, fakeValue, label) {
     return function () {
-      var args = arguments;
-      var settled = false;
-      return new Promise(function (resolve) {
-        var timer = setTimeout(function () {
-          if (settled) return;
-          settled = true;
-          send(label + ': FALLBACK used = ' + JSON.stringify(fallbackValue));
-          resolve(fallbackValue);
-        }, timeoutMs);
-
-        var r;
-        try {
-          r = origFn.apply(thisArg, args);
-        } catch (e) {
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            send(label + ': original threw sync, using FALLBACK = ' + JSON.stringify(fallbackValue) + ' (err: ' + (e && e.message ? e.message : e) + ')');
-            resolve(fallbackValue);
-          }
-          return;
-        }
-
+      // call the real one anyway, purely so we can log what it would have said,
+      // but never let its result reach the caller -- always resolve with fakeValue.
+      try {
+        var r = origFn.apply(thisArg, arguments);
         if (r && typeof r.then === 'function') {
-          r.then(function (v) {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            send(label + ': REAL result = ' + JSON.stringify(v));
-            resolve(v);
-          }, function (e) {
-            if (settled) return;
-            settled = true;
-            clearTimeout(timer);
-            send(label + ': real promise REJECTED (' + (e && e.message ? e.message : e) + '), using FALLBACK = ' + JSON.stringify(fallbackValue));
-            resolve(fallbackValue);
-          });
-        } else {
-          // not a promise at all -- pass the real synchronous value straight through
-          if (!settled) {
-            settled = true;
-            clearTimeout(timer);
-            send(label + ': REAL sync result = ' + JSON.stringify(r));
-            resolve(r);
-          }
+          r.then(function (v) { send(label + ': real would have said ' + JSON.stringify(v) + ' (ignored)'); },
+                 function (e) { send(label + ': real would have rejected ' + (e && e.message ? e.message : e) + ' (ignored)'); });
         }
-      });
+      } catch (e) {
+        send(label + ': real threw sync ' + (e && e.message ? e.message : e) + ' (ignored)');
+      }
+      send(label + ': FORCED fake = ' + JSON.stringify(fakeValue));
+      return Promise.resolve(fakeValue);
     };
   }
 
@@ -87,8 +53,8 @@
     var base = root.base_dll;
     if (typeof base !== 'function' || !base.c) { send('base_dll missing'); return; }
 
-    if (root.__wh_insp12_patched) {
-      send('already patched (persisted), run #' + runs);
+    if (root.__wh_insp13_patched) {
+      send('already force-patched (persisted), run #' + runs);
     } else {
       var ids = Object.getOwnPropertyNames(base.c), nm = null;
       for (var i = 0; i < ids.length && !nm; i++) {
@@ -102,19 +68,19 @@
       if (nm.VshNMPsnAccountModule) {
         var acc = nm.VshNMPsnAccountModule;
         if (typeof acc.IsSignedIn === 'function') {
-          acc.IsSignedIn = raceWithTimeout(acc.IsSignedIn, acc, true, 'IsSignedIn', 1500);
+          acc.IsSignedIn = forceFake(acc.IsSignedIn, acc, true, 'IsSignedIn');
           patched++;
         }
         if (typeof acc.GetState === 'function') {
-          acc.GetState = raceWithTimeout(acc.GetState, acc, 'SIGNED_IN', 'GetState', 1500);
+          acc.GetState = forceFake(acc.GetState, acc, { state: 'signedIn' }, 'GetState');
           patched++;
         }
       } else {
         send('VshNMPsnAccountModule not present on nm');
       }
 
-      root.__wh_insp12_patched = true;
-      send('patched ' + patched + ' PSN account function(s), timeout=1500ms');
+      root.__wh_insp13_patched = true;
+      send('force-patched ' + patched + ' PSN account function(s)');
     }
 
     if (wh.register) {
@@ -122,7 +88,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    send('v12 init complete, run #' + runs);
+    send('v13 init complete, run #' + runs);
   } catch (e) {
     send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
