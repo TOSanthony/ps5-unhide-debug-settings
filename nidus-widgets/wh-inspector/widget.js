@@ -1,10 +1,10 @@
-// wh-inspector v9: v8's props.value check expected the context value ITSELF to duck-type
-// as a store, but react-redux's Context.Provider actually passes { store, subscription },
-// not the store directly. v9 adds a check for props.value.store too (still read-only).
-// createElement hook, but instead of logging component type names, it watches every
-// element's props for a "store" key that duck-types as redux (getState/dispatch/
-// subscribe), and the first time it finds one, reads getState() ONCE (read-only, no
-// dispatch) and reports the sign-in/auth/account-looking slices of state.
+// wh-inspector v10: v9 found A store (productRating/userRating/hubScene/experiments/
+// friendsWhoPlay) but it stopped at the FIRST one found -- that's a small, widget-local
+// store (ratings/social card), not the app-wide sign-in/auth store. createElement calls
+// fire leaf-first (JS evaluates arguments before the call), so the first Provider we hit
+// is an INNER one, not the outermost app Provider. v10 keeps scanning and reports EVERY
+// distinct store it sees (deduped by reference), with just its top-level state keys
+// (brief, to avoid flooding before the next hub restart) -- still fully read-only.
 (function (wh) {
   var root = globalThis;
 
@@ -26,7 +26,7 @@
 
   var runs = (root.__wh_insp_runs || 0) + 1;
   root.__wh_insp_runs = runs;
-  send('=== v9 run #' + runs + ' ===');
+  send('=== v10 run #' + runs + ' ===');
 
   function safeKeys(o) {
     try { return Object.keys(o); } catch (e) { return []; }
@@ -38,63 +38,68 @@
       && typeof o.subscribe === 'function';
   }
 
-  function reportStore(store, where) {
-    send('STORE via ' + where);
+  function briefReport(store, where, idx) {
     var state;
-    try { state = store.getState(); } catch (e) { send('getState threw: ' + (e && e.message ? e.message : e)); return; }
-    if (!state || typeof state !== 'object') { send('state not an object: ' + typeof state); return; }
+    try { state = store.getState(); } catch (e) { send('STORE#' + idx + ' via ' + where + ': getState threw ' + (e && e.message ? e.message : e)); return; }
+    if (!state || typeof state !== 'object') { send('STORE#' + idx + ' via ' + where + ': state not object'); return; }
     var topKeys = safeKeys(state);
-    send('top-level state keys: ' + topKeys.join(','));
+    send('STORE#' + idx + ' via ' + where + ' keys: ' + topKeys.join(','));
     var interesting = topKeys.filter(function (k) { return /sign|auth|login|connect|account|psn|user/i.test(k); });
-    send('interesting keys: ' + (interesting.join(',') || '(none)'));
-    interesting.slice(0, 6).forEach(function (k) {
-      var sub = state[k], out;
-      try {
-        if (sub && typeof sub === 'object') {
-          var parts = [];
-          safeKeys(sub).slice(0, 20).forEach(function (sk) {
-            var v = sub[sk], t = typeof v, vs;
-            if (t === 'object' && v) vs = '{' + safeKeys(v).slice(0, 10).join(',') + '}';
-            else if (t === 'function') vs = 'fn';
-            else vs = String(v);
-            parts.push(sk + '=' + vs);
-          });
-          out = parts.join(' | ');
-        } else { out = String(sub); }
-      } catch (e) { out = 'err:' + (e && e.message ? e.message : e); }
-      send('STATE.' + k + ' -> ' + String(out).slice(0, 280));
-    });
+    if (interesting.length) {
+      interesting.slice(0, 4).forEach(function (k) {
+        var sub = state[k], out;
+        try {
+          if (sub && typeof sub === 'object') {
+            out = safeKeys(sub).slice(0, 12).map(function (sk) {
+              var v = sub[sk], t = typeof v;
+              var vs = t === 'object' && v ? '{' + safeKeys(v).slice(0, 8).join(',') + '}' : (t === 'function' ? 'fn' : String(v));
+              return sk + '=' + vs;
+            }).join(' | ');
+          } else { out = String(sub); }
+        } catch (e) { out = 'err:' + (e && e.message ? e.message : e); }
+        send('STORE#' + idx + '.' + k + ' -> ' + String(out).slice(0, 260));
+      });
+    }
   }
 
   try {
     if (!wh || !wh.React) { send('abort: wh/React missing'); return; }
 
-    if (root.__wh_insp8_hooked) {
+    if (root.__wh_insp10_hooked) {
       send('createElement already hooked (persisted), run #' + runs);
     } else {
-      root.__wh_insp8_hooked = true;
+      root.__wh_insp10_hooked = true;
       var React = wh.React;
       var origCreateElement = React.createElement;
       if (typeof origCreateElement !== 'function') { send('createElement missing'); return; }
 
-      var storeFound = false;
       var checked = 0;
-      var MAX_CHECK = 4000;
+      var MAX_CHECK = 6000;
+      var MAX_STORES = 10;
+      var seen = [];
+      var count = 0;
+
+      function tryStore(candidate, label) {
+        if (!looksLikeStore(candidate)) return false;
+        for (var i = 0; i < seen.length; i++) if (seen[i] === candidate) return true; // already reported
+        if (count >= MAX_STORES) return true;
+        seen.push(candidate);
+        count++;
+        briefReport(candidate, label, count);
+        return true;
+      }
 
       React.createElement = function (type, props) {
-        if (!storeFound && checked < MAX_CHECK) {
+        if (checked < MAX_CHECK && count < MAX_STORES) {
           checked++;
           try {
-            if (props && props.store && looksLikeStore(props.store)) {
-              storeFound = true;
-              reportStore(props.store, 'Provider-like props.store (after ' + checked + ' elements)');
-            } else if (props && props.value && looksLikeStore(props.value)) {
-              storeFound = true;
-              reportStore(props.value, 'Context props.value (after ' + checked + ' elements)');
-            } else if (props && props.value && typeof props.value === 'object'
-                       && looksLikeStore(props.value.store)) {
-              storeFound = true;
-              reportStore(props.value.store, 'Context props.value.store (after ' + checked + ' elements)');
+            if (props && props.store) tryStore(props.store, 'props.store (#' + checked + ')');
+            else if (props && props.value) {
+              if (!tryStore(props.value, 'props.value (#' + checked + ')')) {
+                if (props.value && typeof props.value === 'object') {
+                  tryStore(props.value.store, 'props.value.store (#' + checked + ')');
+                }
+              }
             }
           } catch (e) {
             send('hook error: ' + (e && e.message ? e.message : e));
@@ -110,7 +115,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    send('v9 init complete, run #' + runs);
+    send('v10 init complete, run #' + runs);
   } catch (e) {
     send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
