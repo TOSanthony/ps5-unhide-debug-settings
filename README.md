@@ -8,7 +8,12 @@ l'`app.db` est sauvegardé dans `/data/app.db.<timestamp>.bak`.
 |---|---|
 | `welcome_hub.elf` | met `visible=1` pour `NPXS40063` (Welcome Hub) |
 | `toggle_store.elf` | **bascule** l'icône PlayStation Store (`NPXS40047`) : la cache si elle est visible, la réaffiche si elle est cachée |
+| `dashboard.elf` | **tableau de bord web** en cartes (port 8096), lecture seule |
 | `icon_menu.elf` | **menu web avec interrupteurs** pour afficher/masquer le PlayStation Store, le Welcome Hub et PlayStation Plus |
+
+### Tableau de bord `dashboard.elf`
+
+Page web en cartes (horloge, stockage de la console, météo, état des tuiles de l'accueil, état d'Orbit Store, raccourcis), à ouvrir depuis un téléphone ou un PC : `http://<IP de la PS5>:8096/`. Lecture seule : il n'écrit jamais `app.db`. Raccourcis personnalisés : `/data/dashboard_links.txt` (une ligne `Nom|http://...`). Météo : `/data/dashboard_weather.txt` (`latitude,longitude,Ville`, Paris par défaut ; la météo est récupérée par le navigateur via Open-Meteo). Arrêt : `POST /api/quit` avec l'en-tête `X-Menu: 1`. Ce n'est pas une tuile native de l'écran d'accueil : la page s'ouvre dans un navigateur.
 
 ### Menu `icon_menu.elf`
 
