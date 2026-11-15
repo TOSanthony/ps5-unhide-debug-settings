@@ -131,8 +131,9 @@ static void launch_embedded_bridge(void) {
     appdb_say("Embedded bridge payload extracted (%zu bytes), launching...", blen);
     pid_t pid = fork();
     if (pid == 0) {
-        execl(EMBED_OUT_PATH, EMBED_OUT_PATH, (char *)NULL);
-        _exit(127); /* only reached if execl failed */
+        char *argv[] = { (char *)EMBED_OUT_PATH, NULL };
+        execv(EMBED_OUT_PATH, argv);
+        _exit(127); /* only reached if execv failed */
     } else if (pid > 0) {
         appdb_say("Embedded bridge payload launched (pid %d).", (int)pid);
     } else {
