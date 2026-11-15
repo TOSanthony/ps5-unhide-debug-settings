@@ -102,47 +102,38 @@ static size_t json_str_nl(char *out, size_t cap, size_t off, const char *s);
 /* Diagnostic: checks (in a child process, so a crash cannot kill the dashboard) which
  * system libraries/functions needed for controller battery and trophies can be reached.
  * It only resolves symbols; it calls none of them. */
+typedef int (*load_fn)(const char *, size_t, const void *, unsigned, const void *, int *);
+typedef int (*dlsym_fn)(int, const char *, void **);
+
 static void probe_run(FILE *o) {
-    static const char *names[] = {"libSceUserService", "libScePad", "libSceNpTrophy",
-                                  "libSceNpTrophy2", "libSceSystemService"};
-    static const char *dirs[] = {"/system/common/lib/", "/system/priv/lib/", "/system_ex/common_ex/lib/",
-                                 "/system_ex/priv_ex/lib/", "/system/vsh/", ""};
+    static const char *mods[] = {"libSceUserService", "libScePad", "libSceNpTrophy",
+                                 "libSceNpTrophy2", "libSceSystemService"};
     static const char *syms[] = {"sceUserServiceInitialize", "sceUserServiceGetLoginUserIdList",
-                                 "scePadInit", "scePadGetHandle", "scePadGetControllerInformation",
+                                 "sceUserServiceGetInitialUser", "scePadInit", "scePadOpen",
+                                 "scePadGetHandle", "scePadGetControllerInformation",
                                  "scePadReadState", "sceNpTrophyCreateContext",
-                                 "sceNpTrophyGetGameProgress", "sceSystemServiceGetStatus",
-                                 "sceKernelLoadStartModule"};
-    for (size_t d = 0; d < sizeof dirs / sizeof *dirs; d++) {
-        struct stat st;
-        fprintf(o, "dir %s: %s\n", dirs[d][0] ? dirs[d] : "(none)", dirs[d][0] && stat(dirs[d], &st) == 0 ? "exists" : "-");
-    }
+                                 "sceNpTrophyCreateHandle", "sceNpTrophyGetGameProgress",
+                                 "sceSystemServiceGetStatus"};
+    load_fn load = (load_fn)dlsym(RTLD_DEFAULT, "sceKernelLoadStartModule");
+    dlsym_fn kdlsym = (dlsym_fn)dlsym(RTLD_DEFAULT, "sceKernelDlsym");
+    fprintf(o, "sceKernelLoadStartModule: %s\nsceKernelDlsym: %s\n", load ? "OK" : "-", kdlsym ? "OK" : "-");
     fflush(o);
-    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
-        int ok = 0;
-        for (size_t d = 0; d < sizeof dirs / sizeof *dirs && !ok; d++) {
-            const char *ext[] = {".sprx", ".prx", ""};
-            for (size_t e = 0; e < 3 && !ok; e++) {
-                char path[160];
-                struct stat st;
-                snprintf(path, sizeof path, "%s%s%s", dirs[d], names[i], ext[e]);
-                int exists = dirs[d][0] && stat(path, &st) == 0;
-                void *h = dlopen(path, RTLD_LAZY);
-                if (exists || h) fprintf(o, "%s: file=%s dlopen=%s%s%s\n", path, exists ? "yes" : "no",
-                                         h ? "OK" : "fail", h ? "" : " ", h ? "" : (dlerror() ? "" : ""));
-                fflush(o);
-                if (h) {
-                    ok = 1;
-                    for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
-                        if (dlsym(h, syms[j])) fprintf(o, "  sym %s: OK\n", syms[j]);
-                    fflush(o);
-                }
-            }
+    if (!load) { fprintf(o, "end\n"); return; }
+    for (size_t i = 0; i < sizeof mods / sizeof *mods; i++) {
+        char path[160];
+        snprintf(path, sizeof path, "/system/common/lib/%s.sprx", mods[i]);
+        int res = 0;
+        int h = load(path, 0, NULL, 0, NULL, &res);
+        fprintf(o, "%s: handle=%d (0x%x) res=%d\n", mods[i], h, (unsigned)h, res);
+        fflush(o);
+        if (h <= 0 || !kdlsym) continue;
+        for (size_t j = 0; j < sizeof syms / sizeof *syms; j++) {
+            void *addr = NULL;
+            int r = kdlsym(h, syms[j], &addr);
+            if (r == 0 && addr) fprintf(o, "  sym %s: OK\n", syms[j]);
         }
-        if (!ok) fprintf(o, "%s: not loadable\n", names[i]);
         fflush(o);
     }
-    for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
-        fprintf(o, "global %s: %s\n", syms[j], dlsym(RTLD_DEFAULT, syms[j]) ? "OK" : "-");
     fprintf(o, "end\n");
 }
 
