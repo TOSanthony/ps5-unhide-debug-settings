@@ -24,7 +24,7 @@ toggle_store.elf: toggle_store.c appdb.h sqlite3.o
 icon_menu.elf: icon_menu.c appdb.h sqlite3.o
 	$(CC) $(CFLAGS) -o $@ icon_menu.c sqlite3.o
 
-dashboard.elf: dashboard/dashboard.c dashboard/dashboard_page.h appdb.h sqlite3.o
+dashboard.elf: dashboard/dashboard.c dashboard/dashboard_page.h dashboard/hub_patch_files.h appdb.h sqlite3.o
 	$(CC) $(CFLAGS) -Idashboard -o $@ dashboard/dashboard.c sqlite3.o
 
 pad_probe.elf: pad_probe.c

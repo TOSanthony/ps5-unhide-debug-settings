@@ -15,6 +15,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <dlfcn.h>
+#include <errno.h>
 #include <signal.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -22,14 +23,17 @@
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/statvfs.h>
+#include <unistd.h>
 
 #include "appdb.h"
 #include "dashboard_page.h"
+#include "hub_patch_files.h"
 
 #define DASH_PORT 8096
 #define DASH_VERSION "1.0"
 #define LINKS_FILE "/data/dashboard_links.txt"
 #define WEATHER_FILE "/data/dashboard_weather.txt"
+#define HUB_PATCH_DIR "/data/wh-widgets/hub-signin-patch"
 
 typedef struct {
     const char *title_id;
@@ -55,6 +59,49 @@ static int backup_once(void) {
     return 0;
 }
 
+/*
+ * Deploys or removes the hub-signin-patch NiDUS widget under /data/wh-widgets/.
+ * This makes the Welcome Hub screen clear its "Se connecter" gate (a local, cosmetic
+ * patch -- see widget.js for details, it does NOT create a real PSN session). NiDUS
+ * watches that directory and picks up file changes live, no reboot needed, as long as
+ * NiDUS is already running on the console. Failures here are non-fatal: the tile
+ * visibility change in app.db still goes through either way.
+ */
+static int write_file(const char *path, const char *content) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    size_t len = strlen(content);
+    ssize_t w = write(fd, content, len);
+    close(fd);
+    return (w == (ssize_t)len) ? 0 : -1;
+}
+
+static void deploy_hub_patch(int on) {
+    if (on) {
+        if (mkdir("/data/wh-widgets", 0755) != 0 && errno != EEXIST) { /* best effort */ }
+        if (mkdir(HUB_PATCH_DIR, 0755) != 0 && errno != EEXIST) {
+            appdb_say("hub-signin-patch: could not create %s", HUB_PATCH_DIR);
+            return;
+        }
+        char cfg[512], js[512];
+        snprintf(cfg, sizeof cfg, "%s/config.json", HUB_PATCH_DIR);
+        snprintf(js, sizeof js, "%s/widget.js", HUB_PATCH_DIR);
+        if (write_file(cfg, HUB_PATCH_CONFIG_JSON) != 0 || write_file(js, HUB_PATCH_WIDGET_JS) != 0) {
+            appdb_say("hub-signin-patch: failed writing widget files");
+            return;
+        }
+        appdb_say("hub-signin-patch: deployed (NiDUS will pick it up live if running)");
+    } else {
+        char cfg[512], js[512];
+        snprintf(cfg, sizeof cfg, "%s/config.json", HUB_PATCH_DIR);
+        snprintf(js, sizeof js, "%s/widget.js", HUB_PATCH_DIR);
+        unlink(cfg);
+        unlink(js);
+        rmdir(HUB_PATCH_DIR);
+        appdb_say("hub-signin-patch: removed");
+    }
+}
+
 static int set_tile(const char *title_id, int value) {
     sqlite3 *db = appdb_open();
     if (!db) return -1;
@@ -65,7 +112,10 @@ static int set_tile(const char *title_id, int value) {
     }
     int changed = appdb_set_visible(db, title_id, value);
     sqlite3_close(db);
-    if (changed >= 0) appdb_say("%s: %s (%d row(s)). Reboot to apply.", title_id, value ? "SHOWN" : "HIDDEN", changed);
+    if (changed >= 0) {
+        appdb_say("%s: %s (%d row(s)). Reboot to apply.", title_id, value ? "SHOWN" : "HIDDEN", changed);
+        if (!strcmp(title_id, "NPXS40063")) deploy_hub_patch(value);
+    }
     return changed;
 }
 
