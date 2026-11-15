@@ -41,3 +41,7 @@ export PS5_PAYLOAD_SDK=/opt/ps5-payload-sdk
 # placer sqlite3.c et sqlite3.h (amalgamation SQLite) dans ce dossier
 make
 ```
+
+### Widget NiDUS `nidus-widgets/wh-inspector`
+
+Widget de diagnostic pour [NiDUS](https://github.com/manchildtechnologies-ui/NiDUS) : il ne dessine rien d'utile, il écrit dans `/data/wh-widgets/wh.log` ce que contient l'exécution du Welcome Hub (modules natifs, textes affichés, d'où vient le texte « Se connecter »), pour trouver le test de connexion PSN. Copier le dossier dans `/data/wh-widgets/`, ouvrir le Welcome Hub, puis lire `wh.log` (lignes `[widget:wh-inspector]`). Lecture seule : il ne modifie aucun fichier de la console.
