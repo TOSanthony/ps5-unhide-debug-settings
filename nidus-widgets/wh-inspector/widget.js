@@ -1,13 +1,9 @@
-// wh-inspector v3: v2 confirmed the widget runs fine (__wh, React, View, base_dll all
-// present, wh.register() works). Now: list every NativeModule name and method matching a
-// sign-in/user/account keyword, find where the "Se connecter" text comes from, and send
-// everything in multiple chunks (each previous version's single 700-char log cut the list
-// short).
+// wh-inspector v4: the log shows the hub's JS runtime restarts every 2-13s while stuck on
+// "Se connecter" (a new "[hub] eval" with a fresh rt= id), tearing down our widget before
+// the slow queued logger (700ms/line) could finish. v4 sends everything immediately and
+// synchronously, most important first, with no throttling queue.
 (function (wh) {
   var root = globalThis;
-  var q = [];
-
-  function queue(msg) { q.push(String(msg)); }
 
   function hexOf(s) {
     var hex = '';
@@ -26,32 +22,24 @@
     } catch (e) {}
   }
 
-  // Drains the queue slowly (one line/700ms) so lines are not dropped or interleaved.
-  var pumpN = 0;
-  var pump = root.setInterval(function () {
-    if (!q.length) { if (pumpN > 200) root.clearInterval(pump); pumpN++; return; }
-    send(q.shift());
-  }, 700);
-
-  function chunkList(tag, arr) {
-    if (!arr.length) { queue(tag + ': (none)'); return; }
+  function sendList(tag, arr) {
+    if (!arr.length) { send(tag + ': (none)'); return; }
     var line = tag + ': ';
     for (var i = 0; i < arr.length; i++) {
-      if (line.length > 280) { queue(line); line = tag + '+ '; }
+      if (line.length > 280) { send(line); line = tag + '+ '; }
       line += arr[i] + ' ';
     }
-    queue(line);
+    send(line);
   }
 
-  var KEY = /sign|login|logout|npstate|account|psn|online|offline|auth|session|connect|network|user/i;
+  var runs = (root.__wh_insp_runs || 0) + 1;
+  root.__wh_insp_runs = runs;
+  send('=== wh-inspector v4 run #' + runs + ' (hub runtime restart count) ===');
 
   try {
-    if (!wh) { queue('abort: wh missing'); return; }
+    if (!wh) { send('abort: wh missing'); return; }
 
-    // 1) full wh keys
-    chunkList('wh keys', Object.keys(wh));
-
-    // 2) every NativeModule name, and for each one every method matching KEY
+    var KEY = /sign|login|logout|npstate|account|psn|online|offline|auth|session|connect|network|user/i;
     var base = root.base_dll;
     if (typeof base === 'function' && base.c) {
       var ids = Object.getOwnPropertyNames(base.c), nm = null;
@@ -61,7 +49,7 @@
       }
       if (nm) {
         var allNames = Object.keys(nm);
-        chunkList('ALL NativeModules', allNames);
+        // Priority 1: matches only, sent first.
         var hitLines = [];
         allNames.forEach(function (name) {
           var m; try { m = nm[name]; } catch (e) { return; }
@@ -73,51 +61,46 @@
             if (f.length) hitLines.push(name + '{' + f.join(',') + '}');
           }
         });
-        chunkList('sign/user/online matches', hitLines);
+        sendList('MATCHES', hitLines);
+        // Priority 2: full name list (for completeness).
+        sendList('ALL_NM', allNames);
       } else {
-        queue('NativeModules object not found in any base_dll export');
+        send('NativeModules object not found');
       }
     } else {
-      queue('base_dll missing');
+      send('base_dll missing');
     }
 
-    // 3) hook React.createElement to catch the "Se connecter" / "not signed in" text and its
-    // caller stack, plus every distinct component name seen.
-    var seenText = {}, nText = 0, seenComp = {}, nComp = 0;
+    // Priority 3: hook createElement immediately (cheap, synchronous, survives even a
+    // short-lived runtime since it fires on every render that happens before teardown).
+    var seenText = {};
     var TXT = /connect|sign|login|sesi|psn|network|offline|account|compte/i;
     var R = wh.React, orig = R.createElement;
     R.createElement = function (type, props) {
       try {
         var name = (type && (type.displayName || type.name)) || (typeof type === 'string' ? type : '?');
-        if (!seenComp[name] && nComp < 150) { seenComp[name] = 1; nComp++; }
-        var kids = [];
-        for (var a = 2; a < arguments.length; a++) kids.push(arguments[a]);
-        var ch = (props && props.children) || kids[0];
+        var ch = props && props.children;
         var s = typeof ch === 'string' ? ch : '';
         if (s && s.length < 150 && !seenText[s]) {
-          seenText[s] = 1; nText++;
-          queue('text "' + s + '" in <' + name + '>');
+          seenText[s] = 1;
           if (TXT.test(s)) {
-            try { queue('  stack: ' + String(new Error().stack).replace(/\n/g, ' > ').slice(0, 500)); } catch (e) {}
+            send('TEXT "' + s + '" in <' + name + '> stack: ' +
+                 String(new Error().stack || '').replace(/\n/g, ' > ').slice(0, 260));
+          } else {
+            send('text "' + s + '" in <' + name + '>');
           }
         }
       } catch (e) {}
       return orig.apply(this, arguments);
     };
-    queue('React.createElement hooked OK');
-
-    root.setTimeout(function () {
-      chunkList('components seen after 6s', Object.keys(seenComp));
-      queue('distinct texts seen: ' + nText);
-    }, 6000);
 
     if (wh.register) {
       wh.register(function Dummy() {
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    queue('wh-inspector v3 init complete');
+    send('v4 init complete, run #' + runs);
   } catch (e) {
-    queue('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
+    send('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 260) : ''));
   }
 })(globalThis.__wh);
