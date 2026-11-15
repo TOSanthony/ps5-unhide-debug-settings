@@ -14,7 +14,10 @@
  */
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <dlfcn.h>
 #include <signal.h>
+#include <sys/wait.h>
+#include <fcntl.h>
 #include <sys/select.h>
 #include <sys/socket.h>
 #include <sys/statvfs.h>
@@ -93,6 +96,73 @@ static void query_get(const char *query, const char *key, char *out, size_t n) {
     }
 }
 
+static size_t json_str_nl(char *out, size_t cap, size_t off, const char *s);
+
+/* Diagnostic: checks (in a child process, so a crash cannot kill the dashboard) which
+ * system libraries/functions needed for controller battery and trophies can be reached.
+ * It only resolves symbols; it calls none of them. */
+static void probe_run(FILE *o) {
+    static const char *libs[] = {"libSceUserService.sprx", "libScePad.sprx", "libSceNpTrophy.sprx",
+                                 "libSceNpTrophy2.sprx", "libSceSystemService.sprx"};
+    static const char *syms[] = {"sceUserServiceInitialize", "sceUserServiceGetLoginUserIdList",
+                                 "scePadInit", "scePadGetHandle", "scePadGetControllerInformation",
+                                 "scePadReadState", "sceNpTrophyCreateContext",
+                                 "sceNpTrophyGetGameProgress", "sceSystemServiceGetStatus"};
+    for (size_t i = 0; i < sizeof libs / sizeof *libs; i++) {
+        void *h = dlopen(libs[i], RTLD_LAZY);
+        fprintf(o, "lib %s: %s\n", libs[i], h ? "OK" : "absent");
+        fflush(o);
+        if (!h) continue;
+        for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
+            if (dlsym(h, syms[j])) fprintf(o, "  sym %s: OK\n", syms[j]);
+        fflush(o);
+    }
+    for (size_t j = 0; j < sizeof syms / sizeof *syms; j++)
+        if (dlsym(RTLD_DEFAULT, syms[j])) fprintf(o, "global sym %s: OK\n", syms[j]);
+    fprintf(o, "end\n");
+}
+
+static void probe_json(char *out, size_t cap) {
+    int pfd[2];
+    size_t off = 0;
+    char raw[3072];
+    size_t n = 0;
+    raw[0] = 0;
+    if (pipe(pfd) != 0) { snprintf(out, cap, "{\"log\":\"pipe failed\"}"); return; }
+    pid_t pid = fork();
+    if (pid == 0) {
+        close(pfd[0]);
+        FILE *o = fdopen(pfd[1], "w");
+        probe_run(o);
+        fclose(o);
+        _exit(0);
+    }
+    close(pfd[1]);
+    if (pid > 0) {
+        time_t t0 = time(NULL);
+        fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+        int st = 0, done = 0;
+        while (time(NULL) - t0 < 4 && !done) {
+            ssize_t r = read(pfd[0], raw + n, sizeof raw - 1 - n);
+            if (r > 0) n += (size_t)r;
+            if (waitpid(pid, &st, WNOHANG) == pid) done = 1;
+            else usleep(50000);
+        }
+        ssize_t r;
+        while ((r = read(pfd[0], raw + n, sizeof raw - 1 - n)) > 0) n += (size_t)r;
+        if (!done) { kill(pid, SIGKILL); waitpid(pid, &st, 0); }
+        raw[n] = 0;
+        if (!done) n += (size_t)snprintf(raw + n, sizeof raw - n, "TIMEOUT (blocked)\n");
+        else if (WIFSIGNALED(st)) n += (size_t)snprintf(raw + n, sizeof raw - n, "CRASH signal %d\n", WTERMSIG(st));
+    }
+    close(pfd[0]);
+    off += (size_t)snprintf(out + off, cap - off, "{\"log\":\"");
+    off = json_str_nl(out, cap, off, raw);
+    snprintf(out + off, cap - off, "\"}");
+    FILE *f = fopen("/data/dashboard_probe.log", "w");
+    if (f) { fputs(raw, f); fclose(f); }
+}
+
 static void send_all(int fd, const char *p, size_t n) {
     while (n) {
         ssize_t w = send(fd, p, n, 0);
@@ -123,6 +193,17 @@ static size_t json_str(char *out, size_t cap, size_t off, const char *s) {
         unsigned char c = (unsigned char)*s;
         if (c == '"' || c == '\\') { out[off++] = '\\'; out[off++] = (char)c; }
         else if (c < 0x20) { out[off++] = ' '; }
+        else out[off++] = (char)c;
+    }
+    return off;
+}
+
+static size_t json_str_nl(char *out, size_t cap, size_t off, const char *s) {
+    for (; *s && off + 8 < cap; s++) {
+        unsigned char c = (unsigned char)*s;
+        if (c == '"' || c == '\\') { out[off++] = '\\'; out[off++] = (char)c; }
+        else if (c == '\n') { out[off++] = '\\'; out[off++] = 'n'; }
+        else if (c < 0x20) out[off++] = ' ';
         else out[off++] = (char)c;
     }
     return off;
@@ -270,6 +351,11 @@ static void handle(int fd) {
             if (!strcmp(id, TILES[i].title_id)) r = set_tile(id, v[0] == '1');
         if (r < 0) reply(fd, 500, "text/plain", "failed");
         else reply(fd, 200, "application/json", "{\"ok\":true}");
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/api/probe")) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        static char pb[4096];
+        probe_json(pb, sizeof pb);
+        reply(fd, 200, "application/json", pb);
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/quit")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         g_quit = 1;

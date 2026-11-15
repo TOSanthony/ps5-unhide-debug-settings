@@ -44,6 +44,7 @@ const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'
 const H={'X-Menu':'1'};
 let note='';
 async function act(url){try{const r=await fetch(url,{method:'POST',headers:H});if(!r.ok)throw 0;note='Redémarre la PS5 pour appliquer.'}catch(e){note='Échec (sauvegarde ou base inaccessible).'}await load()}
+async function probe(){$('pr').textContent='Test en cours…';try{const r=await fetch('/api/probe',{method:'POST',headers:H});$('pr').textContent=(await r.json()).log}catch(e){$('pr').textContent='Échec'}}
 const setTile=(id,v)=>act('/api/set?id='+id+'&v='+(v?1:0));
 const setOrbit=v=>act('/api/orbit?v='+(v?1:0));
 const gb=b=>(b/1073741824).toFixed(1)+' Go';
@@ -62,7 +63,7 @@ async function load(){try{const r=await fetch('/api/info',{cache:'no-store'});co
  $('tiles').innerHTML=j.tiles.map(t=>'<div class="row"><span>'+esc(t.label)+'</span><button class="sw '+(t.visible?'on':'')+'" '+(t.found?'':'disabled ')+'title="'+(t.visible?'visible':'masqué')+'" onclick="setTile(\''+esc(t.id)+'\','+(t.visible?0:1)+')"></button></div>').join('')+'<small>'+note+'</small>';
  $('links').innerHTML=j.links.map(l=>'<a class="link" target="_blank" rel="noopener" href="'+esc(l.url)+'">'+esc(l.label)+'</a>').join('')||'<small>Aucun raccourci. Cree /data/dashboard_links.txt (une ligne par lien : Nom|http://...).</small>';
  const o=j.orbit;$('orbit').innerHTML=o.found?'<div class="row"><span>Épinglé à gauche</span><button class="sw '+(o.pinned?'on':'')+'" onclick="setOrbit('+(o.pinned?0:1)+')"></button></div><small>Garde icon_menu.elf lancé pour maintenir le verrou.</small>':'<small>Non installé</small>';
- $('sys').innerHTML='<div class="row"><span>Actif depuis</span><b>'+Math.floor(j.uptime/60)+' min</b></div><small>dashboard.elf '+j.version+'</small>';
+ $('sys').innerHTML='<div class="row"><span>Actif depuis</span><b>'+Math.floor(j.uptime/60)+' min</b></div><small>dashboard.elf '+j.version+'</small><div class="row"><button onclick="probe()">Diagnostic manettes / trophées</button></div><pre id="pr" style="white-space:pre-wrap;font-size:12px;color:var(--mut)"></pre>';
  if(!wxDone){wxDone=true;weather(j.weather)}
 }catch(e){$('ip').textContent='hors ligne'}}
 load();setInterval(load,10000);
