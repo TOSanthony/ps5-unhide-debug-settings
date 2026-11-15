@@ -52,6 +52,7 @@ static const tile_t TILES[] = {
 static int g_quit = 0;
 static int g_backed_up = 0;
 static time_t g_start = 0;
+static int g_watch_orbit = 0; /* 1 = keep Orbit Store pinned+locked while running */
 
 static int backup_once(void) {
     if (g_backed_up) return 0;
@@ -201,8 +202,27 @@ static int set_orbit(int on) {
     int changed = appdb_set_system_pin(db, ORBIT_ID, on);
     if (changed >= 0 && appdb_set_lock(db, ORBIT_ID, on) != 0) changed = -1;
     sqlite3_close(db);
-    if (changed >= 0) appdb_say("Orbit Store: %s. Reboot to apply.", on ? "PINNED + LOCKED" : "UNPINNED");
+    if (changed >= 0) {
+        g_watch_orbit = on;
+        appdb_say("Orbit Store: %s. Reboot to apply.", on ? "PINNED + LOCKED" : "UNPINNED");
+    }
     return changed;
+}
+
+/* The console rewrites a tile's lastAccessIndex when that app is launched, which drops
+ * the lock. While the dashboard runs (and Orbit Store was pinned via the switch, or was
+ * already pinned at startup), re-apply the lock as soon as it is lost. */
+static void watch_tick(void) {
+    if (!g_watch_orbit) return;
+    sqlite3 *db = appdb_open();
+    if (!db) return;
+    int pinned = 0;
+    if (appdb_system_state(db, ORBIT_ID, &pinned) && !pinned) {
+        if (backup_once() == 0 && appdb_set_system_pin(db, ORBIT_ID, 1) >= 0
+            && appdb_set_lock(db, ORBIT_ID, 1) == 0)
+            appdb_say("Orbit Store: lock re-applied.");
+    }
+    sqlite3_close(db);
 }
 
 static void query_get(const char *query, const char *key, char *out, size_t n) {
@@ -508,6 +528,15 @@ int main(void) {
     signal(SIGPIPE, SIG_IGN);
     g_start = time(NULL);
 
+    {   /* if Orbit Store is already pinned at startup, keep watching its lock */
+        sqlite3 *db = appdb_open();
+        if (db) {
+            int pinned = 0;
+            if (appdb_system_state(db, ORBIT_ID, &pinned) && pinned) g_watch_orbit = 1;
+            sqlite3_close(db);
+        }
+    }
+
     int srv = socket(AF_INET, SOCK_STREAM, 0);
     if (srv < 0) { appdb_say("socket: %s", strerror(errno)); return 1; }
     int one = 1;
@@ -550,6 +579,13 @@ int main(void) {
     launch_embedded_bridge();
 
     while (!g_quit) {
+        fd_set rs;
+        FD_ZERO(&rs);
+        FD_SET(srv, &rs);
+        struct timeval wt = {2, 0};
+        int sr = select(srv + 1, &rs, NULL, NULL, &wt);
+        if (sr == 0) { watch_tick(); continue; }
+        if (sr < 0) { if (errno == EINTR) continue; break; }
         int fd = accept(srv, NULL, NULL);
         if (fd < 0) {
             if (errno == EINTR) continue;
