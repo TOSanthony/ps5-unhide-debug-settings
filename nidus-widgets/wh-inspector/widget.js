@@ -1,16 +1,9 @@
-// wh-inspector v17: v16 called VshNMPsnGameIntentModule.getConstants() (returned {},
-// no schema) then GetPermittedIntentTypes() with zero arguments -- that second call
-// produced no log line at all, not even a caught exception, meaning it most likely
-// crashed the Hub's JS session at the native bridge level rather than throwing a
-// catchable JS error. v17 retries GetPermittedIntentTypes with a plausible argument
-// ({} then [], one at a time) instead of zero args, in case the native glue expects
-// an argument object and faults on arguments[0] being undefined. Still does NOT call
-// LaunchApp/LaunchAppForLegacySession.
-//
-// Because a native-level crash can kill the JS context before the normal queued/
-// throttled send() pump gets a chance to flush, the before/after markers around each
-// risky call are sent immediately (fire-and-forget fetch), not queued, so we have the
-// best chance of seeing how far it got even if the session dies mid-call.
+// wh-inspector v18: v17 called GetPermittedIntentTypes({}) -- no crash this time, it
+// returned a real Promise that rejected with "invalid title id." (code 0x81700504).
+// That confirms the method expects an object with a titleId property. v18 calls it
+// with Orbit Store's own real titleId (PPSA99177) to see what intent types Sony's
+// Welcome Hub bridge considers permitted for it. Still read-only: this only asks
+// "what's allowed", it does not call LaunchApp/LaunchAppForLegacySession.
 (function (wh) {
   var root = globalThis;
   var q = [];
@@ -44,9 +37,9 @@
   }, 700);
 
   var already = false;
-  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v17-done') === '1'; } catch (e) {}
+  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v18-done') === '1'; } catch (e) {}
   if (already) { return; }
-  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v17-done', '1'); } catch (e) {}
+  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v18-done', '1'); } catch (e) {}
 
   try {
     if (!wh) { queue('abort: wh missing'); return; }
@@ -64,27 +57,21 @@
     var gi = nm['VshNMPsnGameIntentModule'];
     if (!gi) { queue('VshNMPsnGameIntentModule not present this run'); return; }
 
-    var args = [{}, []];
-    for (var j = 0; j < args.length; j++) {
-      var a = args[j];
-      sendNow('about to call GetPermittedIntentTypes(' + safeStr(a) + ')');
-      try {
-        var r = gi.GetPermittedIntentTypes(a);
-        if (r && typeof r.then === 'function') {
-          sendNow('GetPermittedIntentTypes(' + safeStr(a) + '): returned a promise, awaiting...');
-          r.then(
-            function (ok) { sendNow('GetPermittedIntentTypes resolved: ' + safeStr(ok)); },
-            function (err) { sendNow('GetPermittedIntentTypes rejected: ' + safeStr(err)); }
-          );
-        } else {
-          sendNow('GetPermittedIntentTypes(' + safeStr(a) + ') -> ' + safeStr(r));
-        }
-        // If we got here without crashing, don't also try the next argument shape --
-        // we already have a usable answer.
-        break;
-      } catch (e) {
-        sendNow('GetPermittedIntentTypes(' + safeStr(a) + ') EXCEPTION: ' + (e && e.message ? e.message : e));
+    var a = { titleId: 'PPSA99177' };
+    sendNow('about to call GetPermittedIntentTypes(' + safeStr(a) + ')');
+    try {
+      var r = gi.GetPermittedIntentTypes(a);
+      if (r && typeof r.then === 'function') {
+        sendNow('GetPermittedIntentTypes(' + safeStr(a) + '): returned a promise, awaiting...');
+        r.then(
+          function (ok) { sendNow('GetPermittedIntentTypes resolved: ' + safeStr(ok)); },
+          function (err) { sendNow('GetPermittedIntentTypes rejected: ' + safeStr(err)); }
+        );
+      } else {
+        sendNow('GetPermittedIntentTypes(' + safeStr(a) + ') -> ' + safeStr(r));
       }
+    } catch (e) {
+      sendNow('GetPermittedIntentTypes(' + safeStr(a) + ') EXCEPTION: ' + (e && e.message ? e.message : e));
     }
 
     if (wh.register) {
@@ -92,7 +79,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    queue('wh-inspector v17 probe complete');
+    queue('wh-inspector v18 probe complete');
   } catch (e) {
     sendNow('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
   }
