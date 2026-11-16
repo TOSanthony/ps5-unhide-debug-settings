@@ -29,7 +29,7 @@ padding:14px clamp(14px,4vw,28px) 40px;max-width:1600px;margin:auto}
 a.link{display:block;margin:6px 0;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.06);color:var(--txt);text-decoration:none}
 a.link:hover{background:rgba(59,130,246,.35)}
 small{color:var(--mut)}
-#whlog,#ollog{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(0,0,0,.35);
+#whlog,#ollog,#whsdk{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(0,0,0,.35);
 border-radius:10px;padding:10px;margin-top:10px;font:12px/1.4 ui-monospace,Consolas,monospace}
 button.mini{background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--txt);border-radius:8px;
 padding:6px 12px;font-size:13px;cursor:pointer}
@@ -83,6 +83,12 @@ async function viewOrbitLatestLog(){ollogOpen=true;$('ollogbox').style.display='
   ollogText=j.log||'(journal vide — ouvre le Welcome Hub sur la console puis réessaie)'}
  catch(e){ollogText='Échec de la lecture du journal.'}
  $('ollog').textContent=ollogText}
+let whsdkOpen=false,whsdkText='';
+async function viewWhSdkLog(){whsdkOpen=true;$('whsdkbox').style.display='block';$('whsdk').textContent='Chargement…';
+ try{const r=await fetch('/api/wh_log',{headers:H});const j=await r.json();
+  whsdkText=j.log||'(wh.log vide ou absent — le SDK officiel du Welcome Hub ne l\'a peut-être jamais créé)'}
+ catch(e){whsdkText='Échec de la lecture du journal.'}
+ $('whsdk').textContent=whsdkText}
 const gb=b=>(b/1073741824).toFixed(1)+' Go';
 function tick(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
  $('date').textContent=d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'})}
@@ -99,7 +105,8 @@ async function load(){try{const r=await fetch('/api/info',{cache:'no-store'});co
  $('links').innerHTML=j.links.map(l=>'<a class="link" target="_blank" rel="noopener" href="'+esc(l.url)+'">'+esc(l.label)+'</a>').join('')||'<small>Aucun raccourci. Cree /data/dashboard_links.txt (une ligne par lien : Nom|http://...).</small>';
  const o=j.orbit;$('orbit').innerHTML=o.found?'<div class="row"><span>Épinglé à gauche</span><button class="sw '+(o.pinned?'on':'')+'" onclick="setOrbit('+(o.pinned?0:1)+')"></button></div><small>Verrou maintenu automatiquement tant que dashboard.elf tourne.</small>':'<small>Non installé</small>';
  $('diag').innerHTML='<div class="row"><span>Widget Hub Inspector</span><button class="sw '+(j.wh_inspector?'on':'')+'" onclick="setWhInspector('+(j.wh_inspector?0:1)+')"></button></div><small>Déploie un widget de diagnostic dans le Welcome Hub (liste les NativeModules disponibles).</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewLog()">Voir le journal</button></div><div id="whlogbox" style="display:'+(whlogOpen?'block':'none')+'"><div id="whlog">'+esc(whlogText)+'</div></div>'
-  +'<div class="row" style="margin-top:16px"><span>Widget Orbit Store (test)</span><button class="sw '+(j.orbit_latest?'on':'')+'" onclick="setOrbitLatest('+(j.orbit_latest?0:1)+')"></button></div><small>Teste l\'affichage d\'un widget Orbit Store dans le Welcome Hub.</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewOrbitLatestLog()">Voir le journal</button></div><div id="ollogbox" style="display:'+(ollogOpen?'block':'none')+'"><div id="ollog">'+esc(ollogText)+'</div></div>';
+  +'<div class="row" style="margin-top:16px"><span>Widget Orbit Store (test)</span><button class="sw '+(j.orbit_latest?'on':'')+'" onclick="setOrbitLatest('+(j.orbit_latest?0:1)+')"></button></div><small>Teste l\'affichage d\'un widget Orbit Store dans le Welcome Hub.</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewOrbitLatestLog()">Voir le journal</button></div><div id="ollogbox" style="display:'+(ollogOpen?'block':'none')+'"><div id="ollog">'+esc(ollogText)+'</div></div>'
+  +'<div class="row" style="margin-top:16px"><span>wh.log (SDK officiel)</span></div><small>Journal officiel du Welcome Hub (/data/wh-widgets/wh.log) : erreurs de rendu, widgets non chargés, etc.</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewWhSdkLog()">Voir wh.log</button></div><div id="whsdkbox" style="display:'+(whsdkOpen?'block':'none')+'"><div id="whsdk">'+esc(whsdkText)+'</div></div>';
  if(!wxDone){wxDone=true;weather(j.weather)}
 }catch(e){}}
 load();setInterval(load,10000);

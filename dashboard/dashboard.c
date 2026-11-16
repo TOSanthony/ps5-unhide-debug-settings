@@ -620,6 +620,29 @@ static void handle_widget_log_view(int fd, const char *log_path) {
     reply(fd, 200, "application/json", buf);
 }
 
+/* Same idea, but for the SDK's own /data/wh-widgets/wh.log, which rotates at
+ * 256KB -- so the interesting ([widget:<id>] not loaded / render error) lines
+ * are usually near the END, not the start. Seek to the last ~15000 bytes
+ * instead of reading from byte 0. */
+static void handle_wh_log_view(int fd) {
+    static char buf[16384];
+    size_t off = (size_t)snprintf(buf, sizeof buf, "{\"log\":\"");
+    FILE *f = fopen("/data/wh-widgets/wh.log", "r");
+    if (f) {
+        fseek(f, 0, SEEK_END);
+        long size = ftell(f);
+        long want = 15000;
+        fseek(f, size > want ? size - want : 0, SEEK_SET);
+        char line[1024];
+        if (size > want) fgets(line, sizeof line, f); /* drop a likely-partial first line */
+        while (fgets(line, sizeof line, f) && off + 64 < sizeof buf)
+            off = json_str_nl(buf, sizeof buf, off, line);
+        fclose(f);
+    }
+    off += (size_t)snprintf(buf + off, sizeof buf - off, "\"}");
+    reply(fd, 200, "application/json", buf);
+}
+
 /* Reads a full HTTP request (headers + body, if any) into req/cap, looping recv()
  * until the header terminator is seen and, if Content-Length is present, until that
  * many body bytes have arrived too. Needed because a POST body (used by /__log) can
@@ -715,6 +738,9 @@ static void handle(int fd) {
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/orbit_latest_log")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         handle_widget_log_view(fd, "/data/orbit-latest.log");
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/wh_log")) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        handle_wh_log_view(fd);
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/probe")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         static char pb[4096];
