@@ -1,9 +1,11 @@
-// wh-inspector v20: abandons the undocumented VshNMPsnGameIntentModule.LaunchApp
-// call (it just hung forever with no effect, likely missing some backend-only
-// piece). Tries a different, user-supplied, publicly documented PS5 URI scheme
-// instead: "psgm:play?id=<titleId>" ("Launch an application with the given id"),
-// by assigning it to location.href -- the normal way an embedded webview triggers
-// a custom URL scheme handler without necessarily tearing down the whole page.
+// wh-inspector v21: v20 found there's no browser-style location object in this JS
+// environment (it's a React-Native-like bridge, not a real webview DOM) -- but the
+// full NativeModules dump turned up VshNMApplicationLinkingPSModule, with exactly
+// the standard RN "Linking" module shape: GetInitialURL, CanOpenURL, OpenURL,
+// OpenURLArg, OpenTask, StartEventListener. This is almost certainly the correct,
+// intended way to trigger a custom URL scheme like "psgm:play?id=<titleId>" from
+// this bridge. v21 calls CanOpenURL first (pure read-only check), and only calls
+// OpenURL if that reports true.
 (function (wh) {
   var root = globalThis;
   var q = [];
@@ -37,39 +39,60 @@
   }, 700);
 
   var already = false;
-  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v20-done') === '1'; } catch (e) {}
+  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v21-done') === '1'; } catch (e) {}
   if (already) { return; }
-  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v20-done', '1'); } catch (e) {}
+  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v21-done', '1'); } catch (e) {}
+
+  function callMaybePromise(label, fn) {
+    try {
+      var r = fn();
+      if (r && typeof r.then === 'function') {
+        sendNow(label + ': returned a promise, awaiting...');
+        return r.then(
+          function (ok) { sendNow(label + ' resolved: ' + safeStr(ok)); return ok; },
+          function (err) { sendNow(label + ' rejected: ' + safeStr(err)); throw err; }
+        );
+      }
+      sendNow(label + ' -> ' + safeStr(r));
+      return Promise.resolve(r);
+    } catch (e) {
+      sendNow(label + ' EXCEPTION: ' + (e && e.message ? e.message : e));
+      return Promise.reject(e);
+    }
+  }
 
   try {
     if (!wh) { queue('abort: wh missing'); return; }
 
-    var target = 'psgm:play?id=PPSA99177';
-    sendNow('about to navigate to ' + target);
+    var base = root.base_dll;
+    if (typeof base !== 'function' || !base.c) { queue('base_dll missing'); return; }
 
-    try {
-      if (root.location) {
-        root.location.href = target;
-        sendNow('set location.href, no synchronous exception');
-      } else {
-        sendNow('no location object on globalThis');
-      }
-    } catch (e) {
-      sendNow('location.href EXCEPTION: ' + (e && e.message ? e.message : e));
+    var ids = Object.getOwnPropertyNames(base.c), nm = null;
+    for (var i = 0; i < ids.length && !nm; i++) {
+      var ex; try { ex = base.c[ids[i]].exports; } catch (e) { continue; }
+      if (ex && typeof ex === 'object' && ex.NativeModules) nm = ex.NativeModules;
     }
+    if (!nm) { queue('NativeModules object not found in any base_dll export'); return; }
 
-    // A short delay before this last marker: if the page/context is torn down by a
-    // real navigation, we will never see it, which itself is informative.
-    root.setTimeout(function () {
-      sendNow('still alive ' + 1500 + 'ms after the psgm: navigation attempt');
-    }, 1500);
+    var link = nm['VshNMApplicationLinkingPSModule'];
+    if (!link) { queue('VshNMApplicationLinkingPSModule not present this run'); return; }
+
+    var target = 'psgm:play?id=PPSA99177';
+    callMaybePromise('CanOpenURL(' + target + ')', function () { return link.CanOpenURL(target); })
+      .then(function (can) {
+        if (can) {
+          return callMaybePromise('OpenURL(' + target + ')', function () { return link.OpenURL(target); });
+        }
+        sendNow('CanOpenURL said false/falsy -- not calling OpenURL');
+      })
+      .catch(function () { /* already logged above */ });
 
     if (wh.register) {
       wh.register(function Dummy() {
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    queue('wh-inspector v20 probe complete');
+    queue('wh-inspector v21 probe complete');
   } catch (e) {
     sendNow('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
   }
