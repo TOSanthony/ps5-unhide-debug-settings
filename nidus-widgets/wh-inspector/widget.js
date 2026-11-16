@@ -1,14 +1,16 @@
-// wh-inspector v16: still read-only for everything except the two explicit probe
-// calls below. v15 found VshNMPsnGameIntentModule exposed to Welcome Hub widgets,
-// with exactly: LaunchApp, LaunchAppForLegacySession, GetPermittedIntentTypes,
-// getConstants. This version does NOT call LaunchApp/LaunchAppForLegacySession --
-// those are the ones that would actually try to launch something, and we don't yet
-// know what argument shape they expect. It only calls the two side-effect-free
-// query methods (getConstants/GetPermittedIntentTypes), which by Sony's own naming
-// and by RN NativeModule convention (getConstants) just return data, to learn the
-// intent schema before risking a real launch call.
-// Logged to dashboard.elf's own HTTP server (port 8096), which appends to
-// /data/wh-inspector.log.
+// wh-inspector v17: v16 called VshNMPsnGameIntentModule.getConstants() (returned {},
+// no schema) then GetPermittedIntentTypes() with zero arguments -- that second call
+// produced no log line at all, not even a caught exception, meaning it most likely
+// crashed the Hub's JS session at the native bridge level rather than throwing a
+// catchable JS error. v17 retries GetPermittedIntentTypes with a plausible argument
+// ({} then [], one at a time) instead of zero args, in case the native glue expects
+// an argument object and faults on arguments[0] being undefined. Still does NOT call
+// LaunchApp/LaunchAppForLegacySession.
+//
+// Because a native-level crash can kill the JS context before the normal queued/
+// throttled send() pump gets a chance to flush, the before/after markers around each
+// risky call are sent immediately (fire-and-forget fetch), not queued, so we have the
+// best chance of seeing how far it got even if the session dies mid-call.
 (function (wh) {
   var root = globalThis;
   var q = [];
@@ -24,10 +26,7 @@
     } catch (e) { return 'unstringifiable(' + typeof v + '): ' + String(v); }
   }
 
-  // The message goes in the POST body, not the URL: NiDUS's internal HTTP client
-  // truncates the request LINE (method+path+version) at ~256 bytes. A body has no
-  // such limit. The widget id stays in the query string (it's tiny).
-  function send(msg) {
+  function sendNow(msg) {
     try {
       var url = 'http://127.0.0.1:8096/__log?w=77682d696e73706563746f72';
       var text = String(msg).slice(0, 1200);
@@ -36,19 +35,18 @@
     } catch (e) {}
   }
 
+  function send(msg) { sendNow(msg); }
+
   var pumpN = 0;
   var pump = root.setInterval(function () {
     if (!q.length) { if (pumpN > 200) root.clearInterval(pump); pumpN++; return; }
     send(q.shift());
   }, 700);
 
-  // Avoids re-running (and re-flooding the log) every time the Hub's JS session
-  // restarts, which it does every few seconds -- best effort, falls through to
-  // running every time if localStorage isn't available in this webview.
   var already = false;
-  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v16-done') === '1'; } catch (e) {}
+  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v17-done') === '1'; } catch (e) {}
   if (already) { return; }
-  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v16-done', '1'); } catch (e) {}
+  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v17-done', '1'); } catch (e) {}
 
   try {
     if (!wh) { queue('abort: wh missing'); return; }
@@ -65,33 +63,37 @@
 
     var gi = nm['VshNMPsnGameIntentModule'];
     if (!gi) { queue('VshNMPsnGameIntentModule not present this run'); return; }
-    queue('VshNMPsnGameIntentModule found, methods: ' + safeStr(Object.keys(gi)));
 
-    ['getConstants', 'GetPermittedIntentTypes'].forEach(function (method) {
+    var args = [{}, []];
+    for (var j = 0; j < args.length; j++) {
+      var a = args[j];
+      sendNow('about to call GetPermittedIntentTypes(' + safeStr(a) + ')');
       try {
-        if (typeof gi[method] !== 'function') { queue(method + ': not a function'); return; }
-        var r = gi[method]();
+        var r = gi.GetPermittedIntentTypes(a);
         if (r && typeof r.then === 'function') {
-          queue(method + ': returned a promise, awaiting...');
+          sendNow('GetPermittedIntentTypes(' + safeStr(a) + '): returned a promise, awaiting...');
           r.then(
-            function (ok) { queue(method + ' resolved: ' + safeStr(ok)); },
-            function (err) { queue(method + ' rejected: ' + safeStr(err)); }
+            function (ok) { sendNow('GetPermittedIntentTypes resolved: ' + safeStr(ok)); },
+            function (err) { sendNow('GetPermittedIntentTypes rejected: ' + safeStr(err)); }
           );
         } else {
-          queue(method + ' -> ' + safeStr(r));
+          sendNow('GetPermittedIntentTypes(' + safeStr(a) + ') -> ' + safeStr(r));
         }
+        // If we got here without crashing, don't also try the next argument shape --
+        // we already have a usable answer.
+        break;
       } catch (e) {
-        queue(method + ' EXCEPTION: ' + (e && e.message ? e.message : e));
+        sendNow('GetPermittedIntentTypes(' + safeStr(a) + ') EXCEPTION: ' + (e && e.message ? e.message : e));
       }
-    });
+    }
 
     if (wh.register) {
       wh.register(function Dummy() {
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    queue('wh-inspector v16 probe complete');
+    queue('wh-inspector v17 probe complete');
   } catch (e) {
-    queue('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
+    sendNow('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
   }
 })(globalThis.__wh);
