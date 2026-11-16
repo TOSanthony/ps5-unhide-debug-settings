@@ -72,11 +72,20 @@
     gridRow: { flexDirection: 'row' },
     gridCell: { borderRadius: 8, backgroundColor: '#263a58', overflow: 'hidden', position: 'relative' },
     gridCellFocused: { backgroundColor: '#3a568a' },
+    // Drawn as a sibling on top of the cover image, since the image covers
+    // the cell completely and a focusedStyle background behind it would
+    // never actually show -- this is how you can tell which game you're on.
+    gridCellSelected: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderWidth: 3, borderColor: '#ffffff', borderRadius: 8 },
     gridLabelBar: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#000000a0', paddingHorizontal: 6, paddingVertical: 3 },
-    coverWrap: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-    coverArt: { borderRadius: 10, backgroundColor: '#263a58' },
-    coverTitle: { marginTop: 8, textAlign: 'center' },
-    coverDots: { flexDirection: 'row', justifyContent: 'center', marginTop: 8 },
+    // Cover mode: the image fills the whole card edge to edge (no gap from
+    // the card's own padding), title/dots overlaid on a bottom strip.
+    coverFill: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0 },
+    coverPlaceholderFull: { backgroundColor: '#263a58', alignItems: 'center', justifyContent: 'center' },
+    coverOverlay: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#000000a0',
+                    paddingHorizontal: 16, paddingTop: 8, paddingBottom: 10,
+                    borderBottomLeftRadius: 16, borderBottomRightRadius: 16 },
+    coverTitle: { color: '#ffffff' },
+    coverDots: { flexDirection: 'row', justifyContent: 'center', marginTop: 6 },
     coverDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#ffffff40', marginHorizontal: 3 },
     coverDotActive: { backgroundColor: '#ffffff', width: 16 }
   });
@@ -118,7 +127,8 @@
           ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: size, height: size } })
           : null,
         ce(View, { style: styles.gridLabelBar },
-          ce(Label, { style: styles.small, numberOfLines: 1 }, String(item.title || item.titleId || '?')))
+          ce(Label, { style: styles.small, numberOfLines: 1 }, String(item.title || item.titleId || '?'))),
+        selected ? ce(View, { style: styles.gridCellSelected }) : null
       );
     });
   }
@@ -208,6 +218,13 @@
     var pad = 32, titleH = 40, gap = 8;
     var innerW = W - pad, innerH = H - pad - titleH - gap;
 
+    // Cover mode, once there's something to show: the cover fills the whole
+    // tile edge to edge (no card padding, no separate header row) -- the
+    // title/dots sit on an overlay strip on top of the image instead.
+    if (mode === 'cover' && !data.loading && !data.error && total)
+      return ce(View, { style: [styles.card, { width: W, height: H }] },
+        renderCoverFull(data.items, coverIndex, W, H));
+
     var body;
     if (data.loading) {
       body = ce(Label, { style: styles.dim }, 'Chargement...');
@@ -217,8 +234,6 @@
       body = ce(Label, { style: styles.dim }, 'Aucun jeu dans le catalogue.');
     } else if (mode === 'grid') {
       body = renderGrid(data.items, innerW, innerH, openItem);
-    } else if (mode === 'cover') {
-      body = renderCover(data.items, coverIndex, innerW, innerH);
     } else {
       body = renderList(data.items, compact, innerH, openItem);
     }
@@ -287,22 +302,25 @@
     return ce(View, null, lines);
   }
 
-  // Cover mode: one big piece of cover art, like the stock PS Store widget's
-  // featured-game view, with a dot strip underneath. Deliberately has no
+  // Cover mode: the cover art fills the entire tile edge to edge, like the
+  // stock PS Store widget's featured-game view -- resizeMode 'cover' keeps
+  // the image's own proportions and crops to fit (so a tall/square cover in
+  // a short DEFAULT-size tile shows its vertical middle, not a squeezed or
+  // letterboxed version). Title/dots sit on a translucent strip over the
+  // bottom of the image, not in extra space below it. Deliberately has no
   // wh.Focusable item -- X/L1/R1 all reach OrbitLatest's own wh.onPressed
   // handlers directly, instead of first "entering" a one-item tile.
-  function renderCover(allItems, index, innerW, innerH) {
+  function renderCoverFull(allItems, index, W, H) {
     var item = allItems[index] || {};
-    var dotsH = allItems.length > 1 ? 20 : 0;
-    var titleH = 22;
-    var size = Math.max(32, Math.min(innerW, innerH - titleH - dotsH));
-    return ce(View, { style: styles.coverWrap },
+    return ce(View, { style: styles.coverFill },
       (Image && item.cover)
-        ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: [styles.coverArt, { width: size, height: size }] })
-        : ce(View, { style: [styles.coverArt, styles.coverPlaceholder, { width: size, height: size }] },
+        ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: W, height: H } })
+        : ce(View, { style: [styles.coverFill, styles.coverPlaceholderFull] },
             ce(Label, { style: styles.dim }, '?')),
-      ce(Label, { style: [styles.body18, styles.coverTitle], numberOfLines: 1 }, String(item.title || item.titleId || '?')),
-      allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null
+      ce(View, { style: styles.coverOverlay },
+        ce(Label, { style: [styles.body18, styles.coverTitle], numberOfLines: 1 }, String(item.title || item.titleId || '?')),
+        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null
+      )
     );
   }
 
