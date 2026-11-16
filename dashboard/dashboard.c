@@ -233,11 +233,18 @@ static void deploy_orbit_latest(int on) {
         }
         appdb_say("orbit-latest: deployed. Open the Welcome Hub, then check /data/orbit-latest.log");
     } else {
-        char cfg[512], js[512];
+        char cfg[512], js[512], settings[512];
         snprintf(cfg, sizeof cfg, "%s/config.json", ORBIT_LATEST_DIR);
         snprintf(js, sizeof js, "%s/widget.js", ORBIT_LATEST_DIR);
+        /* The SDK's own resident payload saves chosen settings (display mode)
+         * here once the widget declares a "settings" schema (settings.md).
+         * rmdir() below silently fails on a non-empty directory, so without
+         * this the toggle's stat() check (line ~543) keeps seeing the widget
+         * as "on" forever after the first settings change. */
+        snprintf(settings, sizeof settings, "%s/.settings.json", ORBIT_LATEST_DIR);
         unlink(cfg);
         unlink(js);
+        unlink(settings);
         rmdir(ORBIT_LATEST_DIR);
         appdb_say("orbit-latest: removed");
     }
