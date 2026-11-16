@@ -1,34 +1,27 @@
-// orbit-latest v2: real interactive "latest additions" widget for Orbit Store.
+// orbit-latest v3: real interactive "latest additions" widget for Orbit Store.
 //
-// v1 confirmed the first open question (can a widget render visible content at
-// all) by fetching a count and showing "Orbit Store: N jeux" -- not yet tested
-// on-console as of this version. This version goes straight to the full
-// interactive widget, using patterns confirmed to work by a third-party widget
-// (manchildtechnologies-ui/ps5-widget-store's "Widget Store" widget), which is
-// a known-good, currently-installable widget proving:
-//   - wh.React.useState / useEffect DO work inside wh.React.createElement trees
-//   - wh.Focusable (a focusable View wrapper with onPress + focusedStyle) is
-//     the real way to make a row clickable/navigable with the controller
-//   - wh.onPressed(wh.Button.X, fn) captures face/shoulder button presses
-//     globally within the widget while it has focus
-//   - wh.View / wh.Text / wh.Image / wh.ScrollView all render real content
+// Confirmed working on-console (after a full sign-out/sign-in -- the hub
+// keeps its JS runtime across a mere Hub close/reopen, per the official SDK
+// docs at github.com/geodox/ps5-wh-widgets):
+//   - size:3 (FULL, 504x504) with an explicit width/height on the root View
+//     renders visible content; size:1 widgets in this project never had.
+//   - wh.Focusable + wh.onPressed(wh.Button.X, fn) + wh.React.useState all
+//     work and the game list is navigable.
+//   - fontSize (not fontSizePS -- that's the enum of allowed VALUES,
+//     wh.FontSizePS, not a different style key) must be one of
+//     [15,18,21,24,27,30,36,45,54,72] or RNPS throws.
+//   - Pressing a game row does NOT launch that game: its catalog titleId
+//     isn't a real, locally-launchable PS5 app id, so psgm:play falls back
+//     to that title's PlayStation Store page instead. Only Orbit Store's
+//     own titleId (PPSA99177) is a real registered app id.
 //
-// This widget:
-//   1. Fetches Orbit Store's local catalog (127.0.0.1:34177/api/v1/catalog),
-//      which returns entries with at least {id, title, titleId, cover,
-//      releaseDate, addedAt, genre, tagline, ...} (confirmed from
-//      orbit-store's backend/catalog.c).
-//   2. Sorts by addedAt (fallback releaseDate) descending, keeps the top 5.
-//   3. Renders each as a focusable row (cover icon placeholder + title).
-//   4. On press (or X), launches that game directly via the one proven
-//      launch mechanism: VshNMApplicationLinkingPSModule.OpenURL('psgm:play?id=<titleId>')
-//      after CanOpenURL confirms it. Falls back to Orbit Store's own
-//      titleId (PPSA99177) if anything about a specific row's launch fails
-//      or if the list is empty / still loading, so pressing something in
-//      the widget always does *something* useful.
-//   5. Logs every step to /data/orbit-latest.log via dashboard.elf's shared
-//      /__log endpoint (port 8096), same convention as every other
-//      diagnostic widget this session.
+// So: fetches Orbit Store's local catalog (127.0.0.1:34177/api/v1/catalog),
+// shows the 5 most recently added games as a navigable list, and any press
+// (a row, or X) launches Orbit Store itself via the proven
+// VshNMApplicationLinkingPSModule.OpenURL('psgm:play?id=PPSA99177') -- the
+// user picks the specific game from there. Launching straight into one
+// specific game needs Orbit Store's own main.cpp to read a launch
+// parameter, which is a separate, parked task.
 (function (wh) {
   var root = globalThis;
   var ORBIT_STORE_TITLE_ID = 'PPSA99177';
@@ -77,7 +70,17 @@
     } catch (e) {}
   }
 
-  function launchTitleId(titleId, label) {
+  // A per-game titleId from Orbit Store's own catalog is NOT a PS5 app id the
+  // system can launch directly -- confirmed on-console: pressing a game row
+  // opened that title's PlayStation Store page instead of launching anything
+  // (psgm:play falls back to the store page when the id isn't a locally
+  // launchable app). Only Orbit Store's own titleId (PPSA99177) is a real,
+  // registered app id, and only that one is safe to pass to OpenURL. So
+  // every press -- on any row, or X -- just launches Orbit Store itself;
+  // the user picks the specific game from there. (Launching straight into a
+  // specific game is tracked separately: it needs Orbit Store's own main.cpp
+  // to read a launch parameter, which it doesn't today.)
+  function launchOrbitStore(label) {
     try {
       var base = root.base_dll;
       if (typeof base !== 'function' || !base.c) { sendNow('launch(' + label + '): base_dll missing'); return; }
@@ -89,7 +92,7 @@
       if (!nm) { sendNow('launch(' + label + '): NativeModules not found'); return; }
       var link = nm['VshNMApplicationLinkingPSModule'];
       if (!link) { sendNow('launch(' + label + '): ApplicationLinkingPSModule missing'); return; }
-      var target = 'psgm:play?id=' + titleId;
+      var target = 'psgm:play?id=' + ORBIT_STORE_TITLE_ID;
       sendNow('launch(' + label + '): CanOpenURL ' + target);
       Promise.resolve(link.CanOpenURL(target)).then(function (can) {
         if (!can) { sendNow('launch(' + label + '): CanOpenURL false'); return; }
@@ -137,7 +140,7 @@
     if (wh.onPressed) {
       wh.onPressed(wh.Button.Cross, function () {
         var item = state.items[selected];
-        launchTitleId((item && item.titleId) || ORBIT_STORE_TITLE_ID, item ? item.title : 'Orbit Store (fallback)');
+        launchOrbitStore(item ? item.title : null);
         return true;
       });
     }
@@ -156,7 +159,7 @@
           return wh.React.createElement(Row, {
             key: item.id || item.titleId || i,
             item: item,
-            onPress: function () { setSelected(i); launchTitleId(item.titleId || ORBIT_STORE_TITLE_ID, item.title); }
+            onPress: function () { setSelected(i); launchOrbitStore(item.title); }
           });
         })
       );
@@ -172,25 +175,6 @@
   try {
     if (!wh || !wh.register) { sendNow('abort: wh/wh.register missing'); return; }
     if (!wh.Focusable) { sendNow('abort: wh.Focusable missing - cannot build interactive widget'); return; }
-
-    // Diagnostic: the fetch/state pipeline is confirmed working (log shows
-    // "catalog ok, 5 items shown"), yet nothing renders, not even the static
-    // "Chargement..." text that's present on every render from the very
-    // first frame. That points at one of the render primitives themselves
-    // (wh.Text, wh.View, wh.React.createElement...) not being what we
-    // assume -- log their typeof up front to find out which.
-    sendNow('diag: typeof wh.View=' + typeof wh.View + ' wh.Text=' + typeof wh.Text +
-      ' wh.Image=' + typeof wh.Image + ' wh.Focusable=' + typeof wh.Focusable +
-      ' wh.React=' + typeof wh.React + ' wh.React.createElement=' + (wh.React && typeof wh.React.createElement) +
-      ' wh.React.useState=' + (wh.React && typeof wh.React.useState) +
-      ' wh.register=' + typeof wh.register + ' wh.onPressed=' + typeof wh.onPressed +
-      ' wh.Button=' + typeof wh.Button);
-    try {
-      var probe = wh.React.createElement(wh.View || 'View', { style: { padding: 4 } }, wh.React.createElement(wh.Text || 'Text', { style: { fontSizePS: 18, color: '#fff' } }, 'probe'));
-      sendNow('diag: probe element created ok, type=' + typeof probe + ' keys=' + (probe ? Object.keys(probe).join(',') : 'n/a'));
-    } catch (e) {
-      sendNow('diag: probe element creation THREW: ' + (e && e.message ? e.message : e));
-    }
 
     wh.register(OrbitLatest);
     sendNow('orbit-latest v2: registered');
