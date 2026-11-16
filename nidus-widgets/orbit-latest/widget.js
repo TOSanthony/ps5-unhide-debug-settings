@@ -33,6 +33,20 @@
   var root = globalThis;
   var ORBIT_STORE_TITLE_ID = 'PPSA99177';
 
+  // useEffect never fires in this environment (confirmed: the on-console test
+  // showed "registered" logged but the effect's own first log line never
+  // appeared, across a fresh widget mount). useState does work (proven by v1
+  // and this version's own Row/focus state). So the catalog fetch runs once
+  // at module scope -- exactly like v1, which succeeded on every single
+  // restart in the log -- and pushes its result into whichever component
+  // instance's setState is currently live, via this module-level ref.
+  var catalogState = { loading: true, error: '', items: [] };
+  var rerenderRef = null;
+  function applyCatalogState(next) {
+    catalogState = next;
+    if (rerenderRef) { try { rerenderRef(next); } catch (e) {} }
+  }
+
   // This environment only accepts a fixed set of font sizes (confirmed by
   // the third-party widget-store widget's own Txt() helper, which snaps to
   // the nearest supported value); an arbitrary fontSize like 16 throws a
@@ -113,30 +127,10 @@
   }
 
   function OrbitLatest() {
-    var statePair = wh.React.useState({ loading: true, error: '', items: [] });
+    var statePair = wh.React.useState(catalogState);
     var state = statePair[0], setState = statePair[1];
     var selPair = wh.React.useState(0), selected = selPair[0], setSelected = selPair[1];
-
-    wh.React.useEffect(function () {
-      sendNow('orbit-latest v2: fetching catalog...');
-      root.fetch('http://127.0.0.1:34177/api/v1/catalog')
-        .then(function (r) { return r.json(); })
-        .then(function (list) {
-          var items = Array.isArray(list) ? list.slice() : [];
-          items.sort(function (a, b) {
-            var av = String((a && (a.addedAt || a.releaseDate)) || '');
-            var bv = String((b && (b.addedAt || b.releaseDate)) || '');
-            return av < bv ? 1 : (av > bv ? -1 : 0);
-          });
-          items = items.slice(0, 5);
-          sendNow('orbit-latest v2: catalog ok, ' + items.length + ' items shown');
-          setState({ loading: false, error: '', items: items });
-        })
-        .catch(function (e) {
-          sendNow('orbit-latest v2: catalog FAILED: ' + (e && e.message ? e.message : e));
-          setState({ loading: false, error: String(e && e.message || e), items: [] });
-        });
-    }, []);
+    rerenderRef = setState;
 
     if (wh.onPressed) {
       wh.onPressed(wh.Button.Cross, function () {
@@ -178,6 +172,25 @@
     if (!wh.Focusable) { sendNow('abort: wh.Focusable missing - cannot build interactive widget'); return; }
     wh.register(OrbitLatest);
     sendNow('orbit-latest v2: registered');
+
+    sendNow('orbit-latest v2: fetching catalog (module scope)...');
+    root.fetch('http://127.0.0.1:34177/api/v1/catalog')
+      .then(function (r) { return r.json(); })
+      .then(function (list) {
+        var items = Array.isArray(list) ? list.slice() : [];
+        items.sort(function (a, b) {
+          var av = String((a && (a.addedAt || a.releaseDate)) || '');
+          var bv = String((b && (b.addedAt || b.releaseDate)) || '');
+          return av < bv ? 1 : (av > bv ? -1 : 0);
+        });
+        items = items.slice(0, 5);
+        sendNow('orbit-latest v2: catalog ok, ' + items.length + ' items shown');
+        applyCatalogState({ loading: false, error: '', items: items });
+      })
+      .catch(function (e) {
+        sendNow('orbit-latest v2: catalog FAILED: ' + (e && e.message ? e.message : e));
+        applyCatalogState({ loading: false, error: String(e && e.message || e), items: [] });
+      });
   } catch (e) {
     sendNow('orbit-latest v2 EXCEPTION: ' + (e && e.message ? e.message : e));
   }
