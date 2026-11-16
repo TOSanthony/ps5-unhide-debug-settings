@@ -29,7 +29,7 @@ padding:14px clamp(14px,4vw,28px) 40px;max-width:1600px;margin:auto}
 a.link{display:block;margin:6px 0;padding:10px 12px;border-radius:10px;background:rgba(255,255,255,.06);color:var(--txt);text-decoration:none}
 a.link:hover{background:rgba(59,130,246,.35)}
 small{color:var(--mut)}
-#whlog{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(0,0,0,.35);
+#whlog,#ollog{white-space:pre-wrap;word-break:break-word;max-height:260px;overflow:auto;background:rgba(0,0,0,.35);
 border-radius:10px;padding:10px;margin-top:10px;font:12px/1.4 ui-monospace,Consolas,monospace}
 button.mini{background:rgba(255,255,255,.08);border:1px solid var(--line);color:var(--txt);border-radius:8px;
 padding:6px 12px;font-size:13px;cursor:pointer}
@@ -70,12 +70,19 @@ async function act(url){try{const r=await fetch(url,{method:'POST',headers:H});i
 const setTile=(id,v)=>act('/api/set?id='+id+'&v='+(v?1:0));
 const setOrbit=v=>act('/api/orbit?v='+(v?1:0));
 const setWhInspector=v=>act('/api/wh_inspector?v='+(v?1:0));
+const setOrbitLatest=v=>act('/api/orbit_latest?v='+(v?1:0));
 let whlogOpen=false,whlogText='';
 async function viewLog(){whlogOpen=true;$('whlogbox').style.display='block';$('whlog').textContent='Chargement…';
  try{const r=await fetch('/api/wh_inspector_log',{headers:H});const j=await r.json();
   whlogText=j.log||'(journal vide — ouvre le Welcome Hub sur la console puis réessaie)'}
  catch(e){whlogText='Échec de la lecture du journal.'}
  $('whlog').textContent=whlogText}
+let ollogOpen=false,ollogText='';
+async function viewOrbitLatestLog(){ollogOpen=true;$('ollogbox').style.display='block';$('ollog').textContent='Chargement…';
+ try{const r=await fetch('/api/orbit_latest_log',{headers:H});const j=await r.json();
+  ollogText=j.log||'(journal vide — ouvre le Welcome Hub sur la console puis réessaie)'}
+ catch(e){ollogText='Échec de la lecture du journal.'}
+ $('ollog').textContent=ollogText}
 const gb=b=>(b/1073741824).toFixed(1)+' Go';
 function tick(){const d=new Date();$('clock').textContent=d.toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'});
  $('date').textContent=d.toLocaleDateString('fr-FR',{weekday:'long',day:'numeric',month:'long'})}
@@ -91,7 +98,8 @@ async function load(){try{const r=await fetch('/api/info',{cache:'no-store'});co
  $('tiles').innerHTML=j.tiles.map(t=>'<div class="row"><span>'+esc(t.label)+'</span><button class="sw '+(t.visible?'on':'')+'" '+(t.found?'':'disabled ')+'title="'+(t.visible?'visible':'masqué')+'" onclick="setTile(\''+esc(t.id)+'\','+(t.visible?0:1)+')"></button></div>').join('')+'<small>'+note+'</small>';
  $('links').innerHTML=j.links.map(l=>'<a class="link" target="_blank" rel="noopener" href="'+esc(l.url)+'">'+esc(l.label)+'</a>').join('')||'<small>Aucun raccourci. Cree /data/dashboard_links.txt (une ligne par lien : Nom|http://...).</small>';
  const o=j.orbit;$('orbit').innerHTML=o.found?'<div class="row"><span>Épinglé à gauche</span><button class="sw '+(o.pinned?'on':'')+'" onclick="setOrbit('+(o.pinned?0:1)+')"></button></div><small>Verrou maintenu automatiquement tant que dashboard.elf tourne.</small>':'<small>Non installé</small>';
- $('diag').innerHTML='<div class="row"><span>Widget Hub Inspector</span><button class="sw '+(j.wh_inspector?'on':'')+'" onclick="setWhInspector('+(j.wh_inspector?0:1)+')"></button></div><small>Déploie un widget de diagnostic dans le Welcome Hub (liste les NativeModules disponibles).</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewLog()">Voir le journal</button></div><div id="whlogbox" style="display:'+(whlogOpen?'block':'none')+'"><div id="whlog">'+esc(whlogText)+'</div></div>';
+ $('diag').innerHTML='<div class="row"><span>Widget Hub Inspector</span><button class="sw '+(j.wh_inspector?'on':'')+'" onclick="setWhInspector('+(j.wh_inspector?0:1)+')"></button></div><small>Déploie un widget de diagnostic dans le Welcome Hub (liste les NativeModules disponibles).</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewLog()">Voir le journal</button></div><div id="whlogbox" style="display:'+(whlogOpen?'block':'none')+'"><div id="whlog">'+esc(whlogText)+'</div></div>'
+  +'<div class="row" style="margin-top:16px"><span>Widget Orbit Store (test)</span><button class="sw '+(j.orbit_latest?'on':'')+'" onclick="setOrbitLatest('+(j.orbit_latest?0:1)+')"></button></div><small>Teste l\'affichage d\'un widget Orbit Store dans le Welcome Hub.</small><div class="row" style="margin-top:10px"><button class="mini" onclick="viewOrbitLatestLog()">Voir le journal</button></div><div id="ollogbox" style="display:'+(ollogOpen?'block':'none')+'"><div id="ollog">'+esc(ollogText)+'</div></div>';
  if(!wxDone){wxDone=true;weather(j.weather)}
 }catch(e){}}
 load();setInterval(load,10000);

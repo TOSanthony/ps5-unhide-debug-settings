@@ -31,6 +31,7 @@
 #include "dashboard_page.h"
 #include "hub_patch_files.h"
 #include "wh_inspector_files.h"
+#include "orbit_latest_files.h"
 
 #define DASH_PORT 8096
 #define DASH_VERSION "1.0"
@@ -42,6 +43,12 @@
  * Remove WH_INSPECTOR_DIR, its deploy function, API route, source files and generator
  * once that investigation is done. */
 #define WH_INSPECTOR_DIR "/data/wh-widgets/wh-inspector"
+/* Experimental "Orbit Store - derniers ajouts" Welcome Hub widget, built on top of
+ * the wh-inspector findings (VshNMApplicationLinkingPSModule.OpenURL works). First
+ * version only tests whether a widget can render anything VISIBLE at all (so far,
+ * only an invisible 8x8 box has ever been confirmed). Deployed/removed via
+ * /api/orbit_latest, independently of the other widgets. */
+#define ORBIT_LATEST_DIR "/data/wh-widgets/orbit-latest"
 
 typedef struct {
     const char *title_id;
@@ -207,6 +214,32 @@ static void deploy_wh_inspector(int on) {
         unlink(js);
         rmdir(WH_INSPECTOR_DIR);
         appdb_say("wh-inspector: removed");
+    }
+}
+
+static void deploy_orbit_latest(int on) {
+    if (on) {
+        if (mkdir("/data/wh-widgets", 0755) != 0 && errno != EEXIST) { /* best effort */ }
+        if (mkdir(ORBIT_LATEST_DIR, 0755) != 0 && errno != EEXIST) {
+            appdb_say("orbit-latest: could not create %s", ORBIT_LATEST_DIR);
+            return;
+        }
+        char cfg[512], js[512];
+        snprintf(cfg, sizeof cfg, "%s/config.json", ORBIT_LATEST_DIR);
+        snprintf(js, sizeof js, "%s/widget.js", ORBIT_LATEST_DIR);
+        if (write_file(cfg, ORBIT_LATEST_CONFIG_JSON) != 0 || write_file(js, ORBIT_LATEST_WIDGET_JS) != 0) {
+            appdb_say("orbit-latest: failed writing widget files");
+            return;
+        }
+        appdb_say("orbit-latest: deployed. Open the Welcome Hub, then check /data/orbit-latest.log");
+    } else {
+        char cfg[512], js[512];
+        snprintf(cfg, sizeof cfg, "%s/config.json", ORBIT_LATEST_DIR);
+        snprintf(js, sizeof js, "%s/widget.js", ORBIT_LATEST_DIR);
+        unlink(cfg);
+        unlink(js);
+        rmdir(ORBIT_LATEST_DIR);
+        appdb_say("orbit-latest: removed");
     }
 }
 
@@ -506,6 +539,10 @@ static void info_json(char *out, size_t cap, const char *ip) {
     int wh_deployed = stat(WH_INSPECTOR_DIR, &whst) == 0;
     off += (size_t)snprintf(out + off, cap - off, ",\"wh_inspector\":%s", wh_deployed ? "true" : "false");
 
+    struct stat olst;
+    int ol_deployed = stat(ORBIT_LATEST_DIR, &olst) == 0;
+    off += (size_t)snprintf(out + off, cap - off, ",\"orbit_latest\":%s", ol_deployed ? "true" : "false");
+
     off += (size_t)snprintf(out + off, cap - off, "}");
 }
 
@@ -566,12 +603,13 @@ static void handle_widget_log(int fd, const char *query, const char *body) {
     reply(fd, 200, "text/plain", "ok");
 }
 
-/* Returns the content of /data/wh-inspector.log as a JSON string, for the dashboard's
- * "Diagnostic" panel. Requires the same X-Menu header as the other admin actions. */
-static void handle_wh_inspector_log(int fd) {
+/* Returns the content of a widget's /data/<name>.log as a JSON string, for the
+ * dashboard's "Diagnostic" panel. Requires the same X-Menu header as the other
+ * admin actions. */
+static void handle_widget_log_view(int fd, const char *log_path) {
     static char buf[16384];
     size_t off = (size_t)snprintf(buf, sizeof buf, "{\"log\":\"");
-    FILE *f = fopen("/data/wh-inspector.log", "r");
+    FILE *f = fopen(log_path, "r");
     if (f) {
         char line[1024];
         while (fgets(line, sizeof line, f) && off + 64 < sizeof buf)
@@ -666,7 +704,17 @@ static void handle(int fd) {
         reply(fd, 200, "application/json", "{\"ok\":true}");
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/wh_inspector_log")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
-        handle_wh_inspector_log(fd);
+        handle_widget_log_view(fd, "/data/wh-inspector.log");
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/api/orbit_latest")) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        char v[4];
+        query_get(query ? query : "", "v", v, sizeof v);
+        if (strcmp(v, "0") && strcmp(v, "1")) { reply(fd, 400, "text/plain", "bad params"); return; }
+        deploy_orbit_latest(v[0] == '1');
+        reply(fd, 200, "application/json", "{\"ok\":true}");
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/orbit_latest_log")) {
+        if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        handle_widget_log_view(fd, "/data/orbit-latest.log");
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/probe")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         static char pb[4096];
