@@ -11,20 +11,17 @@
 
   function queue(msg) { q.push(String(msg)); }
 
-  function hexOf(s) {
-    var hex = '';
-    for (var i = 0; i < s.length; i++) {
-      var c = s.charCodeAt(i);
-      hex += (c < 16 ? '0' : '') + c.toString(16);
-    }
-    return hex;
-  }
-
+  // The message goes in the POST body, not the URL: NiDUS's internal HTTP client
+  // truncates the request LINE (method+path+version) at ~256 bytes, which was
+  // silently cutting every longer line mid-word when it was hex-encoded into the
+  // query string. A body has no such limit. The widget id stays in the query
+  // string (it's tiny) so the server can still route the log to the right file.
   function send(msg) {
     try {
-      var url = 'http://127.0.0.1:8096/__log?w=77682d696e73706563746f72&h=' + hexOf(String(msg).slice(0, 320));
-      if (root.fetch) root.fetch(url).catch(function () {});
-      else if (root.XMLHttpRequest) { var x = new root.XMLHttpRequest(); x.open('GET', url, true); x.send(); }
+      var url = 'http://127.0.0.1:8096/__log?w=77682d696e73706563746f72';
+      var text = String(msg).slice(0, 1200);
+      if (root.fetch) root.fetch(url, { method: 'POST', body: text }).catch(function () {});
+      else if (root.XMLHttpRequest) { var x = new root.XMLHttpRequest(); x.open('POST', url, true); x.send(text); }
     } catch (e) {}
   }
 
@@ -40,7 +37,7 @@
     if (!arr.length) { queue(tag + ': (none)'); return; }
     var line = tag + ': ';
     for (var i = 0; i < arr.length; i++) {
-      if (line.length > 280) { queue(line); line = tag + '+ '; }
+      if (line.length > 1100) { queue(line); line = tag + '+ '; }
       line += arr[i] + ' ';
     }
     queue(line);

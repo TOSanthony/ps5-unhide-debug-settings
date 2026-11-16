@@ -534,20 +534,29 @@ static size_t hex_decode(const char *hex, char *out, size_t cap) {
 }
 
 /* Receives diagnostic log lines from a NiDUS widget running inside the Welcome Hub
- * (GET /__log?w=<hex widget id>&h=<hex message>). Appends them to /data/<widget>.log.
+ * (POST /__log?w=<hex widget id>, raw message as the request body). Appends them to
+ * /data/<widget>.log. The widget id stays hex-encoded in the query string (it's tiny,
+ * well under any line-length limit); the message itself goes in the body instead of
+ * the URL because NiDUS's internal HTTP client truncates the request LINE (method +
+ * path + version) at around 256 bytes -- a GET with a long hex-encoded message was
+ * silently cut mid-word every time, which a body is not subject to.
  * No auth header required: NiDUS's embedded webview cannot set the X-Menu header this
  * server otherwise requires, and this endpoint only ever receives text, never acts on it. */
-static void handle_widget_log(int fd, const char *query) {
-    char w[64] = {0}, h[512] = {0}, widget[32] = {0}, msg[256] = {0};
+static void handle_widget_log(int fd, const char *query, const char *body) {
+    char w[64] = {0}, widget[32] = {0};
     query_get(query ? query : "", "w", w, sizeof w);
-    query_get(query ? query : "", "h", h, sizeof h);
     hex_decode(w, widget, sizeof widget);
-    hex_decode(h, msg, sizeof msg);
     if (!widget[0]) snprintf(widget, sizeof widget, "widget");
 
     (void)mkdir("/data", 0755);
     char path[96];
     snprintf(path, sizeof path, "/data/%.40s.log", widget);
+    static char msg[4001];
+    size_t i = 0;
+    for (const char *p = body ? body : ""; *p && *p != '\r' && *p != '\n' && i + 1 < sizeof msg; p++)
+        msg[i++] = *p;
+    msg[i] = 0;
+
     FILE *f = fopen(path, "a");
     if (f) {
         time_t now = time(NULL);
@@ -573,11 +582,54 @@ static void handle_wh_inspector_log(int fd) {
     reply(fd, 200, "application/json", buf);
 }
 
+/* Reads a full HTTP request (headers + body, if any) into req/cap, looping recv()
+ * until the header terminator is seen and, if Content-Length is present, until that
+ * many body bytes have arrived too. Needed because a POST body (used by /__log) can
+ * easily span more than one TCP read; a single recv() silently truncated it before.
+ * Returns the total bytes read (always NUL-terminated within cap), or <= 0 on error.
+ * *body is set to point at the start of the body within req (or the end of the
+ * buffer, as an empty string, if there is none). */
+static ssize_t read_request(int fd, char *req, size_t cap, char **body) {
+    size_t have = 0;
+    char *hdr_end = NULL;
+    for (;;) {
+        if (have + 1 >= cap) break;
+        ssize_t n = recv(fd, req + have, cap - 1 - have, 0);
+        if (n <= 0) { if (have == 0) return n; break; }
+        have += (size_t)n;
+        req[have] = 0;
+        hdr_end = strstr(req, "\r\n\r\n");
+        if (hdr_end) break;
+    }
+    if (!hdr_end) { *body = req + have; return (ssize_t)have; }
+    *body = hdr_end + 4;
+
+    long want = -1;
+    for (const char *p = req; (p = strchr(p, '\n')); ) {
+        p++;
+        if (!strncasecmp(p, "Content-Length:", 15)) { want = strtol(p + 15, NULL, 10); break; }
+        if (*p == '\r' || *p == '\n') break;
+    }
+    if (want > 0) {
+        size_t body_off = (size_t)(*body - req);
+        long got = (long)have - (long)body_off;
+        while (got < want && have + 1 < cap) {
+            ssize_t n = recv(fd, req + have, cap - 1 - have, 0);
+            if (n <= 0) break;
+            have += (size_t)n;
+            req[have] = 0;
+            got += n;
+        }
+        *body = req + body_off; /* req may not have moved, but be explicit */
+    }
+    return (ssize_t)have;
+}
+
 static void handle(int fd) {
-    char req[2048];
-    ssize_t n = recv(fd, req, sizeof req - 1, 0);
+    static char req[8192];
+    char *body;
+    ssize_t n = read_request(fd, req, sizeof req, &body);
     if (n <= 0) return;
-    req[n] = 0;
     char method[8], path[256];
     if (sscanf(req, "%7s %255s", method, path) != 2) return;
     char *query = strchr(path, '?');
@@ -585,8 +637,8 @@ static void handle(int fd) {
 
     if (!strcmp(method, "GET") && !strcmp(path, "/")) {
         reply(fd, 200, "text/html; charset=utf-8", PAGE);
-    } else if (!strcmp(method, "GET") && !strcmp(path, "/__log")) {
-        handle_widget_log(fd, query);
+    } else if (!strcmp(method, "POST") && !strcmp(path, "/__log")) {
+        handle_widget_log(fd, query, body);
     } else if (!strcmp(method, "GET") && !strcmp(path, "/api/info")) {
         static char buf[8192];
         char ip[64];
