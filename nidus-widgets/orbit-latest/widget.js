@@ -51,6 +51,8 @@
   // the third-party widget-store widget's own Txt() helper, which snaps to
   // the nearest supported value); an arbitrary fontSize like 16 throws a
   // font-related error at render time instead of silently falling back.
+  // That widget uses the plain "fontSize" style key (confirmed working,
+  // live, on the user's own console at size:3) -- not "fontSizePS".
   var SUPPORTED_FONT_SIZES = [15, 18, 21, 24, 27, 30, 36, 45, 54, 72];
   function snapFontSize(requested) {
     var resolved = 15, distance = 1e9;
@@ -61,7 +63,7 @@
     return resolved;
   }
   function Txt(wh, value, size, color, extra) {
-    var style = { color: color || '#ffffff', fontSizePS: snapFontSize(size || 18) };
+    var style = { color: color || '#ffffff', fontSize: snapFontSize(size || 18) };
     if (extra) for (var k in extra) style[k] = extra[k];
     return wh.React.createElement(wh.Text, { style: style }, value == null ? '' : String(value));
   }
@@ -122,11 +124,11 @@
       wh.Image && item.cover
         ? wh.React.createElement(wh.Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: 34, height: 34, borderRadius: 6, marginRight: 10 } })
         : wh.React.createElement(wh.View, { style: { width: 34, height: 34, borderRadius: 6, marginRight: 10, backgroundColor: '#263a58' } }),
-      wh.React.createElement(wh.Text, { style: { color: '#ffffff', fontSizePS: snapFontSize(18), flex: 1 }, numberOfLines: 1 }, String(item.title || item.titleId || '?'))
+      wh.React.createElement(wh.Text, { style: { color: '#ffffff', fontSize: snapFontSize(18), flex: 1 }, numberOfLines: 1 }, String(item.title || item.titleId || '?'))
     );
   }
 
-  function OrbitLatest() {
+  function OrbitLatest(props) {
     var statePair = wh.React.useState(catalogState);
     var state = statePair[0], setState = statePair[1];
     var selPair = wh.React.useState(0), selected = selPair[0], setSelected = selPair[1];
@@ -161,7 +163,7 @@
     }
 
     return wh.React.createElement(
-      wh.View, { style: { padding: 12, backgroundColor: '#090d16', borderRadius: 10 } },
+      wh.View, { style: { width: (props && props.width) || 504, height: (props && props.height) || 504, padding: 12, backgroundColor: '#090d16', borderRadius: 10, overflow: 'hidden' } },
       Txt(wh, 'ORBIT STORE - DERNIERS AJOUTS', 18, '#66e4ff', { fontWeight: 'bold' }),
       body
     );
