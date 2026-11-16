@@ -306,10 +306,15 @@
     );
   }
 
-  // Drops the catalog id at Orbit Store's own backend (best-effort: a stale
-  // or old build without this route must not block the launch below).
+  // Drops the catalog's *game* id at Orbit Store's own backend (best-effort:
+  // a stale or old build without this route must not block the launch
+  // below). item.id is the release's own id -- a game can have several
+  // (different sources/qualities) -- while item.gameId is what groups them
+  // into one Game, the id App::open_game()/state.game() actually resolve.
+  // Sending item.id opens nothing and shows "this game is no longer
+  // available" instead (confirmed on-console).
   function requestOpenGame(item) {
-    var id = item && item.id;
+    var id = item && (item.gameId || item.id);
     if (!id) return Promise.resolve();
     return fetch(OPEN_REQUEST_URL, {
       method: 'POST',
