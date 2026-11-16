@@ -47,7 +47,7 @@
     return resolved;
   }
   function Txt(wh, value, size, color, extra) {
-    var style = { color: color || '#ffffff', fontSize: snapFontSize(size || 18) };
+    var style = { color: color || '#ffffff', fontSizePS: snapFontSize(size || 18) };
     if (extra) for (var k in extra) style[k] = extra[k];
     return wh.React.createElement(wh.Text, { style: style }, value == null ? '' : String(value));
   }
@@ -108,7 +108,7 @@
       wh.Image && item.cover
         ? wh.React.createElement(wh.Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: 34, height: 34, borderRadius: 6, marginRight: 10 } })
         : wh.React.createElement(wh.View, { style: { width: 34, height: 34, borderRadius: 6, marginRight: 10, backgroundColor: '#263a58' } }),
-      wh.React.createElement(wh.Text, { style: { color: '#ffffff', fontSize: snapFontSize(18), flex: 1 }, numberOfLines: 1 }, String(item.title || item.titleId || '?'))
+      wh.React.createElement(wh.Text, { style: { color: '#ffffff', fontSizePS: snapFontSize(18), flex: 1 }, numberOfLines: 1 }, String(item.title || item.titleId || '?'))
     );
   }
 
