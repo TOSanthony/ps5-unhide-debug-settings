@@ -1,5 +1,7 @@
 {
   "id": "orbit-latest",
   "title": "Orbit Store",
-  "size": 3
+  "description": "Les derniers jeux ajoutes a Orbit Store.",
+  "iconFallback": "game",
+  "size": 1
 }
