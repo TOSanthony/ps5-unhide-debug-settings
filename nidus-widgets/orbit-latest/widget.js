@@ -33,6 +33,25 @@
   var root = globalThis;
   var ORBIT_STORE_TITLE_ID = 'PPSA99177';
 
+  // This environment only accepts a fixed set of font sizes (confirmed by
+  // the third-party widget-store widget's own Txt() helper, which snaps to
+  // the nearest supported value); an arbitrary fontSize like 16 throws a
+  // font-related error at render time instead of silently falling back.
+  var SUPPORTED_FONT_SIZES = [15, 18, 21, 24, 27, 30, 36, 45, 54, 72];
+  function snapFontSize(requested) {
+    var resolved = 15, distance = 1e9;
+    for (var i = 0; i < SUPPORTED_FONT_SIZES.length; i++) {
+      var d = Math.abs(SUPPORTED_FONT_SIZES[i] - requested);
+      if (d < distance) { distance = d; resolved = SUPPORTED_FONT_SIZES[i]; }
+    }
+    return resolved;
+  }
+  function Txt(wh, value, size, color, extra) {
+    var style = { color: color || '#ffffff', fontSize: snapFontSize(size || 18) };
+    if (extra) for (var k in extra) style[k] = extra[k];
+    return wh.React.createElement(wh.Text, { style: style }, value == null ? '' : String(value));
+  }
+
   function sendNow(msg) {
     try {
       var url = 'http://127.0.0.1:8096/__log?w=6f726269742d6c6174657374';
@@ -89,7 +108,7 @@
       wh.Image && item.cover
         ? wh.React.createElement(wh.Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: 34, height: 34, borderRadius: 6, marginRight: 10 } })
         : wh.React.createElement(wh.View, { style: { width: 34, height: 34, borderRadius: 6, marginRight: 10, backgroundColor: '#263a58' } }),
-      wh.React.createElement(wh.Text, { style: { color: '#ffffff', fontSize: 16, flex: 1 }, numberOfLines: 1 }, String(item.title || item.titleId || '?'))
+      wh.React.createElement(wh.Text, { style: { color: '#ffffff', fontSize: snapFontSize(18), flex: 1 }, numberOfLines: 1 }, String(item.title || item.titleId || '?'))
     );
   }
 
@@ -129,11 +148,11 @@
 
     var body;
     if (state.loading) {
-      body = wh.React.createElement(wh.Text, { style: { color: '#8fa2bf', fontSize: 15 } }, 'Chargement...');
+      body = Txt(wh, 'Chargement...', 15, '#8fa2bf');
     } else if (state.error) {
-      body = wh.React.createElement(wh.Text, { style: { color: '#ffd479', fontSize: 15 } }, 'Erreur: ' + state.error);
+      body = Txt(wh, 'Erreur: ' + state.error, 15, '#ffd479');
     } else if (!state.items.length) {
-      body = wh.React.createElement(wh.Text, { style: { color: '#8fa2bf', fontSize: 15 } }, 'Aucun jeu dans le catalogue.');
+      body = Txt(wh, 'Aucun jeu dans le catalogue.', 15, '#8fa2bf');
     } else {
       body = wh.React.createElement(
         wh.View, { style: { marginTop: 4 } },
@@ -149,7 +168,7 @@
 
     return wh.React.createElement(
       wh.View, { style: { padding: 12, backgroundColor: '#090d16', borderRadius: 10 } },
-      wh.React.createElement(wh.Text, { style: { color: '#66e4ff', fontSize: 16, fontWeight: 'bold' } }, 'ORBIT STORE - DERNIERS AJOUTS'),
+      Txt(wh, 'ORBIT STORE - DERNIERS AJOUTS', 18, '#66e4ff', { fontWeight: 'bold' }),
       body
     );
   }
