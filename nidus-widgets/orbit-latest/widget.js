@@ -170,6 +170,26 @@
   try {
     if (!wh || !wh.register) { sendNow('abort: wh/wh.register missing'); return; }
     if (!wh.Focusable) { sendNow('abort: wh.Focusable missing - cannot build interactive widget'); return; }
+
+    // Diagnostic: the fetch/state pipeline is confirmed working (log shows
+    // "catalog ok, 5 items shown"), yet nothing renders, not even the static
+    // "Chargement..." text that's present on every render from the very
+    // first frame. That points at one of the render primitives themselves
+    // (wh.Text, wh.View, wh.React.createElement...) not being what we
+    // assume -- log their typeof up front to find out which.
+    sendNow('diag: typeof wh.View=' + typeof wh.View + ' wh.Text=' + typeof wh.Text +
+      ' wh.Image=' + typeof wh.Image + ' wh.Focusable=' + typeof wh.Focusable +
+      ' wh.React=' + typeof wh.React + ' wh.React.createElement=' + (wh.React && typeof wh.React.createElement) +
+      ' wh.React.useState=' + (wh.React && typeof wh.React.useState) +
+      ' wh.register=' + typeof wh.register + ' wh.onPressed=' + typeof wh.onPressed +
+      ' wh.Button=' + typeof wh.Button);
+    try {
+      var probe = wh.React.createElement(wh.View || 'View', { style: { padding: 4 } }, wh.React.createElement(wh.Text || 'Text', { style: { fontSizePS: 18, color: '#fff' } }, 'probe'));
+      sendNow('diag: probe element created ok, type=' + typeof probe + ' keys=' + (probe ? Object.keys(probe).join(',') : 'n/a'));
+    } catch (e) {
+      sendNow('diag: probe element creation THREW: ' + (e && e.message ? e.message : e));
+    }
+
     wh.register(OrbitLatest);
     sendNow('orbit-latest v2: registered');
 
