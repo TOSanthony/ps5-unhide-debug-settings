@@ -27,6 +27,11 @@
 //     Orbit Store itself -- the user picks the specific game from there.
 //   - A changed widget.js only takes effect in a NEW hub JS runtime: closing
 //     and reopening the Hub is not enough, a full sign-out/sign-in is needed.
+//   - Opening a specific game: Orbit Store's own backend (127.0.0.1:34177,
+//     which keeps running even with the TV app closed) now exposes
+//     POST/GET /api/v1/open-request. A press posts the catalog id there
+//     first, then launches Orbit Store as before; the app itself picks the
+//     request up on its next poll and opens straight to that game's page.
 (function (wh) {
   var React = wh.React;
   var View = wh.View;
@@ -39,6 +44,7 @@
 
   var ORBIT_STORE_TITLE_ID = 'PPSA99177';
   var CATALOG_URL = 'http://127.0.0.1:34177/api/v1/catalog';
+  var OPEN_REQUEST_URL = 'http://127.0.0.1:34177/api/v1/open-request';
   var MAT = '#17191ef0';
 
   var styles = wh.StyleSheet.create({
@@ -136,7 +142,10 @@
           compact: compact,
           rowHeight: rowH,
           coverSize: coverSize,
-          onPress: function () { log('launch via row: ' + (item.title || item.titleId)); launchOrbitStore(); }
+          onPress: function () {
+            log('launch via row: ' + (item.title || item.titleId));
+            requestOpenGame(item).then(launchOrbitStore);
+          }
         });
       });
       if (hidden > 0) {
@@ -156,13 +165,23 @@
     );
   }
 
+  // Drops the catalog id at Orbit Store's own backend (best-effort: a stale
+  // or old build without this route must not block the launch below).
+  function requestOpenGame(item) {
+    var id = item && item.id;
+    if (!id) return Promise.resolve();
+    return fetch(OPEN_REQUEST_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ gameId: id })
+    }).catch(function (e) { log('open-request FAILED: ' + ((e && e.message) || e)); });
+  }
+
   // A per-game catalog titleId isn't a real, locally-launchable PS5 app id --
   // confirmed on-console: pressing a row opened that title's PlayStation
   // Store page instead of launching anything. Only Orbit Store's own titleId
   // is a real registered app, so every press launches Orbit Store itself;
-  // the user picks the specific game from there. (Launching straight into a
-  // specific game needs Orbit Store's own main.cpp to read a launch
-  // parameter -- tracked separately.)
+  // the open-request above is what gets it to the right game's page.
   function launchOrbitStore() {
     try {
       var base = globalThis.base_dll;
