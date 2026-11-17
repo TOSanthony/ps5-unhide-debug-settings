@@ -9,7 +9,10 @@ endif
 # once the Ghostpad VDA-signature/Mbus-NID investigation is done.
 # wh_signin_probe.elf is a temporary read-only diagnostic (see wh-signin-probe/wh_signin_probe.c);
 # remove it once the Welcome Hub's process name is confirmed and noted in dashboard.c.
-ELFS := dashboard.elf vda_probe.elf wh_signin_probe.elf
+# vsh-signin-diag.elf is a temporary read-only diagnostic (see vsh-signin-hook/); it injects
+# into SceShellUI's Mono runtime to locate the live VshNMPsnAccountModule instance, logging to
+# klog (port 3232), without changing anything. Remove once the sign-in patch itself is written.
+ELFS := dashboard.elf vda_probe.elf wh_signin_probe.elf vsh-signin-diag.elf
 CFLAGS := -O2 -Wall -I. \
 	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
 	-DSQLITE_OMIT_SHARED_CACHE -DSQLITE_TEMP_STORE=3
@@ -28,5 +31,10 @@ vda_probe.elf: vda-probe/vda_probe.c vda-probe/pt/pt.c vda-probe/pt/pt.h vda-pro
 wh_signin_probe.elf: wh-signin-probe/wh_signin_probe.c wh-signin-probe/pt/pt.c wh-signin-probe/pt/pt.h wh-signin-probe/pt/log.h
 	$(CC) -Wall -O2 -Iwh-signin-probe -o $@ wh-signin-probe/wh_signin_probe.c wh-signin-probe/pt/pt.c
 
+vsh-signin-diag.elf: $(shell find vsh-signin-hook -type f)
+	$(MAKE) -C vsh-signin-hook PS5_PAYLOAD_SDK=$(PS5_PAYLOAD_SDK)
+	cp vsh-signin-hook/build/vsh-signin-diag.elf $@
+
 clean:
 	rm -f $(ELFS) sqlite3.o
+	$(MAKE) -C vsh-signin-hook clean

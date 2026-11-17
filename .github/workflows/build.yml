@@ -24,7 +24,7 @@ jobs:
       - name: Install toolchain dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang lld unzip curl
+          sudo apt-get install -y --no-install-recommends clang lld unzip curl xxd
 
       - name: Install ps5-payload-sdk
         run: |
@@ -41,7 +41,7 @@ jobs:
         run: make
 
       - name: Checksum
-        run: sha256sum dashboard.elf vda_probe.elf wh_signin_probe.elf | tee payloads.sha256
+        run: sha256sum dashboard.elf vda_probe.elf wh_signin_probe.elf vsh-signin-diag.elf | tee payloads.sha256
 
       - uses: actions/upload-artifact@v4
         with:
@@ -50,6 +50,7 @@ jobs:
             dashboard.elf
             vda_probe.elf
             wh_signin_probe.elf
+            vsh-signin-diag.elf
             payloads.sha256
 
   release:
@@ -74,7 +75,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --title "$GITHUB_REF_NAME" \
               --generate-notes \
-              dashboard.elf vda_probe.elf wh_signin_probe.elf payloads.sha256
+              dashboard.elf vda_probe.elf wh_signin_probe.elf vsh-signin-diag.elf payloads.sha256
           else
             # Push sur main -> release "latest" recréée à chaque fois
             gh release delete latest --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
@@ -84,5 +85,5 @@ jobs:
               --prerelease \
               --title "Latest build (${GITHUB_SHA::7})" \
               --notes "Build automatique du commit $GITHUB_SHA" \
-              dashboard.elf vda_probe.elf wh_signin_probe.elf payloads.sha256
+              dashboard.elf vda_probe.elf wh_signin_probe.elf vsh-signin-diag.elf payloads.sha256
           fi
