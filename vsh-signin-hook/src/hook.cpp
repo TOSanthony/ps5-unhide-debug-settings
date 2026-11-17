@@ -171,10 +171,42 @@ static void dump_class(MonoClass *klass, const char *label)
   log_line("%s: %d field(s) total", label, field_count);
 }
 
+/* v6 pivot: v4+v5 exhaustively scanned 25 assemblies (thousands of classes)
+ * for an exact "VshNMPsnAccountModule" match and found none -- that name is
+ * almost certainly NiDUS's own internal alias for the widget, not the real
+ * PS5 C# class name. v5's substring scan did surface real, concrete
+ * sign-in-related classes though: a dedicated "Bridge" namespace in
+ * AppSystem (Bridge.LoginMgrUtil / Bridge.ILoginMgrUtil -- exactly the
+ * shape of a native<->React-Native bridge), plus LoginMgrUtil/
+ * LoginMgrUtilInternal/CheckSigninStateJob in Legacy and
+ * BigAppCompanion.WaitActiveSigninScreen in ReactNativeApps. v6 fully dumps
+ * (every method + every field, pure reflection, nothing invoked) all of
+ * those plus every class under any "*Bridge*" namespace, instead of
+ * chasing the literal name further. */
+static bool str_eq(const char *a, const char *b)
+{
+  if (!a) a = "";
+  if (!b) b = "";
+  while (*a && *b && *a == *b) { ++a; ++b; }
+  return *a == 0 && *b == 0;
+}
+
+struct deep_dump_target { const char *ns; const char *name; };
+static const deep_dump_target deep_dump_targets[] = {
+    {"Sce.Vsh.ShellUI", "LoginMgrUtil"},
+    {"Sce.Vsh.ShellUI", "LoginMgrUtilInternal"},
+    {"", "CheckSigninStateJob"},
+    {"Sce.Vsh.ShellUI.BigAppCompanion", "WaitActiveSigninScreen"},
+    {"Sce.Vsh.ShellUI.LoginMgrProxy", "PsnAccountInfo"},
+};
+
 /* Walks every TypeDef row in image (the ground-truth class list -- no
  * namespace guessing), logging any class whose namespace or name contains
  * one of needles. Dumps the full method/field list for an exact name match
- * on "VshNMPsnAccountModule". Returns the exact-match count. */
+ * on "VshNMPsnAccountModule", for any class in deep_dump_targets, and for
+ * any class under a namespace containing "Bridge". Returns the exact-match
+ * count for "VshNMPsnAccountModule" specifically (deep-dump hits are
+ * logged but counted separately and don't affect this return value). */
 static int scan_image(MonoImage *image, const char *dll_label)
 {
   const MonoTableInfo *table = mono_image_get_table_info(image, MONO_TABLE_TYPEDEF);
@@ -194,6 +226,7 @@ static int scan_image(MonoImage *image, const char *dll_label)
   };
 
   int exact_matches = 0;
+  int deep_dumps = 0;
   int logged = 0;
   for (int row = 0; row < rows; ++row) {
     uint32_t token = MONO_TOKEN_TYPE_DEF | (uint32_t)(row + 1);
@@ -214,19 +247,26 @@ static int scan_image(MonoImage *image, const char *dll_label)
       logged++;
     }
 
-    /* Exact-name compare without <string.h>. */
-    const char *target = "VshNMPsnAccountModule";
-    const char *a = name;
-    const char *b = target;
-    while (*a && *b && *a == *b) { ++a; ++b; }
-    bool exact = (*a == 0 && *b == 0);
-    if (exact) {
+    if (str_eq(name, "VshNMPsnAccountModule")) {
       exact_matches++;
       log_line("%s: EXACT MATCH for VshNMPsnAccountModule at TypeDef row %d (token=%#x)", dll_label, row, token);
       dump_class(klass, dll_label);
+      continue;
+    }
+
+    bool deep_dump = contains_ci(ns, "Bridge");
+    if (!deep_dump) {
+      for (const auto &t : deep_dump_targets) {
+        if (str_eq(ns, t.ns) && str_eq(name, t.name)) { deep_dump = true; break; }
+      }
+    }
+    if (deep_dump) {
+      deep_dumps++;
+      log_line("%s: DEEP DUMP target at TypeDef row %d (token=%#x)", dll_label, row, token);
+      dump_class(klass, dll_label);
     }
   }
-  log_line("%s: scan complete, %d candidate(s) logged, %d exact match(es)", dll_label, logged, exact_matches);
+  log_line("%s: scan complete, %d candidate(s) logged, %d deep dump(s), %d exact match(es)", dll_label, logged, deep_dumps, exact_matches);
   return exact_matches;
 }
 
@@ -247,7 +287,7 @@ static int probe_assembly(MonoDomain *domain, const char *dll_path, const char *
 
 static int run_hook(void)
 {
-  log_line("hook v5 starting (read-only diagnostic, full TypeDef scan, 13 new candidate DLLs)");
+  log_line("hook v6 starting (read-only diagnostic, deep-dump Bridge.* + known signin leads, 6 new candidate DLLs)");
 
   if (!resolve_mono()) {
     log_line("not running in SceShellUI, or a required Mono export is missing");
@@ -267,36 +307,31 @@ static int run_hook(void)
     return 1;
   }
 
-  /* v4 exhaustively scanned those 10 candidates (plus the original 2) --
-   * 12 assemblies, thousands of classes -- and found zero "Account"
-   * substring anywhere, let alone an exact VshNMPsnAccountModule. All of
-   * v4's candidates were either generic Vsh React Native plumbing or the
-   * Settings/LoginMgr screen's own backend. ReactNativeShellApp.dll itself
-   * only ever contained Settings-screen native modules (LoginMgrModule,
-   * SettingsCommonModule, SoundScreenModule, NavigationModule,
-   * InitializationModule, VR2SystemModule, RemotePlayModule, SaveDataModule,
-   * SigninUtility, A11yControllerModule, OptionMenu) -- nothing for any
-   * other ShellUI screen (Home, Welcome Hub, ...). That strongly suggests
-   * those other screens' native modules live in a sibling "apps" host
-   * assembly instead: Sce.Vsh.ShellUI.ReactNativeApps.dll is the obvious
-   * candidate (plural "Apps", distinct from the already-exhausted
-   * "ReactNativeShellApp.dll" singular). Also trying Sce.Vsh.dll (the one
-   * general-purpose catch-all Vsh assembly, not yet opened) and a few more
-   * Np/profile/share DLLs the file listing surfaced. */
+  /* v5 exhaustively scanned 25 assemblies total (v4's 10 + v5's 13 + the
+   * original 2) -- thousands of classes -- for an exact
+   * "VshNMPsnAccountModule" match and found zero. That name is almost
+   * certainly NiDUS's own internal alias for the widget, not a real PS5
+   * class name, so v6 stops chasing it as a literal string. Instead it
+   * re-opens the three assemblies where v5's substring scan already
+   * surfaced concrete sign-in-related classes -- AppSystem (has a
+   * dedicated "Bridge" namespace: Bridge.LoginMgrUtil / Bridge.ILoginMgrUtil,
+   * exactly the native<->React-Native bridge shape), Legacy (LoginMgrUtil,
+   * LoginMgrUtilInternal, CheckSigninStateJob), ReactNativeApps
+   * (BigAppCompanion.WaitActiveSigninScreen) -- and fully dumps those
+   * classes' methods/fields via deep_dump_targets[] and the "*Bridge*"
+   * namespace check in scan_image(). Also trying a handful of still-untried
+   * ShellUI screen DLLs from the directory listing in case the real class
+   * is there instead. */
   static const struct { const char *path; const char *label; } candidates[] = {
-      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeApps.dll", "Sce.Vsh.ShellUI.ReactNativeApps"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.dll", "Sce.Vsh"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.BaseSystem.dll", "Sce.Vsh.ShellUI.BaseSystem"},
       {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.AppSystem.dll", "Sce.Vsh.ShellUI.AppSystem"},
       {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.Legacy.dll", "Sce.Vsh.ShellUI.Legacy"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Common.dll", "Sce.Vsh.Np.Common"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Webapi.dll", "Sce.Vsh.Np.Webapi"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Webapi2.dll", "Sce.Vsh.Np.Webapi2"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.Np.AppInfo.dll", "Sce.Vsh.Np.AppInfo"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.Np.SessionService.dll", "Sce.Vsh.Np.SessionService"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.ProfileCache.dll", "Sce.Vsh.ProfileCache"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ProfileCache.dll", "Sce.Vsh.ShellUI.ProfileCache"},
-      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.Trophy.dll", "RN.Modules.Vsh.Trophy"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeApps.dll", "Sce.Vsh.ShellUI.ReactNativeApps"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.BGLayer.dll", "Sce.Vsh.ShellUI.BGLayer"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.SystemModalDialog.dll", "Sce.Vsh.ShellUI.SystemModalDialog"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.Broadcast.dll", "Sce.Vsh.ShellUI.Broadcast"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.Theme.dll", "Sce.Vsh.ShellUI.Theme"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.Ugc.dll", "Sce.Vsh.ShellUI.Ugc"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.VoiceAndAgent.dll", "Sce.Vsh.ShellUI.VoiceAndAgent"},
   };
 
   int total_found = 0;
