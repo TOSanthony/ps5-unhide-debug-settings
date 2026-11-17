@@ -123,14 +123,16 @@
   // extra row height is spent on the label.
   function GridCell(props) {
     var item = props.item, slot = props.size;
-    // The image sits inside a bordered frame a few px smaller than the slot,
-    // so the white selection border has room to show around it instead of
-    // getting clipped at the image's own edge.
-    var frame = slot - 4;
-    var img = frame - 8;
+    // The border frame sits right at the slot's own edge (cells already have
+    // a gap between them from the grid layout, so adjacent borders never
+    // touch); the image is noticeably smaller than that, leaving a clear
+    // gap all around it for the border to actually be visible in -- the
+    // earlier attempt had the image almost touching the border, which made
+    // it unreadable regardless of color/stacking.
+    var img = slot - 18;
     return ce(wh.Focusable, { onPress: props.onPress, style: { width: slot, height: slot, alignItems: 'center', justifyContent: 'center' } },
       function (selected) {
-        return ce(View, { style: [styles.gridFrame, selected ? styles.gridFrameSelected : null, { width: frame, height: frame }] },
+        return ce(View, { style: [styles.gridFrame, selected ? styles.gridFrameSelected : null, { width: slot, height: slot }] },
           ce(View, { style: [styles.gridImg, { width: img, height: img }] },
             Image && item.cover
               ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: img, height: img } })
@@ -318,7 +320,11 @@
       }
       lines.push(ce(View, { key: 'row' + r, style: [styles.gridRow, r > 0 ? { marginTop: gap } : null] }, cells));
     }
-    return ce(View, null, lines);
+    // The 3x3 block is usually smaller than the available box in one
+    // dimension (cellSize is capped by whichever of width/height is
+    // tighter) -- center it in both so the leftover space is split evenly
+    // instead of all landing on one side.
+    return ce(View, { style: { width: innerW, height: innerH, alignItems: 'center', justifyContent: 'center' } }, lines);
   }
 
   // Cover mode: the cover art fills the entire tile edge to edge, like the
