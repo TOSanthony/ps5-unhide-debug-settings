@@ -185,8 +185,12 @@ static int scan_image(MonoImage *image, const char *dll_label)
   int rows = mono_table_info_get_rows(table);
   log_line("%s: %d TypeDef row(s)", dll_label, rows);
 
+  /* Narrower than v3/v4's filter (dropped "Vsh"/"Login"/"Auth", too common
+   * in a Vsh-everything DLL and just flooded klog with 200 near-misses
+   * last run) -- the exact-name check below runs over every row regardless
+   * of this list, so narrowing it only quiets the candidate listing. */
   static const char *const needles[] = {
-      "Account", "Psn", "SignIn", "Signin", "Auth", "Login", "Vsh", "Nm",
+      "Account", "Psn", "SignIn", "Signin", "Nm",
   };
 
   int exact_matches = 0;
@@ -243,7 +247,7 @@ static int probe_assembly(MonoDomain *domain, const char *dll_path, const char *
 
 static int run_hook(void)
 {
-  log_line("hook v4 starting (read-only diagnostic, full TypeDef scan, 10 new candidate DLLs)");
+  log_line("hook v5 starting (read-only diagnostic, full TypeDef scan, 13 new candidate DLLs)");
 
   if (!resolve_mono()) {
     log_line("not running in SceShellUI, or a required Mono export is missing");
@@ -263,27 +267,36 @@ static int run_hook(void)
     return 1;
   }
 
-  /* v3's full TypeDef scan of both DLLs we already knew about (2315
-   * classes total) found no "Account" substring anywhere, let alone an
-   * exact VshNMPsnAccountModule -- so it genuinely lives elsewhere. The
-   * loader's directory listing of /system_ex/common_ex/lib (244 entries)
-   * gives real candidates we hadn't tried: a per-feature
-   * "ReactNative.Modules.Vsh.*" assembly family (separate from the
-   * "ReactNative.Modules.ShellUI.*" classes that live inside
-   * ReactNativeShellApp.dll) which matches VshNMPsnAccountModule's own
-   * "Vsh" prefix far better, plus the native LoginMgr/PSN/account backend
-   * DLLs the React bridge classes presumably call into. */
+  /* v4 exhaustively scanned those 10 candidates (plus the original 2) --
+   * 12 assemblies, thousands of classes -- and found zero "Account"
+   * substring anywhere, let alone an exact VshNMPsnAccountModule. All of
+   * v4's candidates were either generic Vsh React Native plumbing or the
+   * Settings/LoginMgr screen's own backend. ReactNativeShellApp.dll itself
+   * only ever contained Settings-screen native modules (LoginMgrModule,
+   * SettingsCommonModule, SoundScreenModule, NavigationModule,
+   * InitializationModule, VR2SystemModule, RemotePlayModule, SaveDataModule,
+   * SigninUtility, A11yControllerModule, OptionMenu) -- nothing for any
+   * other ShellUI screen (Home, Welcome Hub, ...). That strongly suggests
+   * those other screens' native modules live in a sibling "apps" host
+   * assembly instead: Sce.Vsh.ShellUI.ReactNativeApps.dll is the obvious
+   * candidate (plural "Apps", distinct from the already-exhausted
+   * "ReactNativeShellApp.dll" singular). Also trying Sce.Vsh.dll (the one
+   * general-purpose catch-all Vsh assembly, not yet opened) and a few more
+   * Np/profile/share DLLs the file listing surfaced. */
   static const struct { const char *path; const char *label; } candidates[] = {
-      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.dll", "ReactNative.Modules.Vsh"},
-      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.WebAppLauncher.dll", "RN.Modules.Vsh.WebAppLauncher"},
-      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.Telemetry.Nq.dll", "RN.Modules.Vsh.Telemetry.Nq"},
-      {"/system_ex/common_ex/lib/ReactNative.Components.Vsh.dll", "ReactNative.Components.Vsh"},
-      {"/system_ex/common_ex/lib/ReactNative.Vsh.Common.dll", "ReactNative.Vsh.Common"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.LoginMgr.dll", "Sce.Vsh.ShellUI.LoginMgr"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.LoginMgrWrapper.dll", "Sce.Vsh.ShellUI.LoginMgrWrapper"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.PsnUtil.dll", "Sce.Vsh.PsnUtil"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Manager.dll", "Sce.Vsh.Np.Manager"},
-      {"/system_ex/common_ex/lib/Sce.Vsh.UserServiceWrapper.dll", "Sce.Vsh.UserServiceWrapper"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeApps.dll", "Sce.Vsh.ShellUI.ReactNativeApps"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.dll", "Sce.Vsh"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.BaseSystem.dll", "Sce.Vsh.ShellUI.BaseSystem"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.AppSystem.dll", "Sce.Vsh.ShellUI.AppSystem"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.Legacy.dll", "Sce.Vsh.ShellUI.Legacy"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Common.dll", "Sce.Vsh.Np.Common"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Webapi.dll", "Sce.Vsh.Np.Webapi"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Webapi2.dll", "Sce.Vsh.Np.Webapi2"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.Np.AppInfo.dll", "Sce.Vsh.Np.AppInfo"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.Np.SessionService.dll", "Sce.Vsh.Np.SessionService"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ProfileCache.dll", "Sce.Vsh.ProfileCache"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ProfileCache.dll", "Sce.Vsh.ShellUI.ProfileCache"},
+      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.Trophy.dll", "RN.Modules.Vsh.Trophy"},
   };
 
   int total_found = 0;
