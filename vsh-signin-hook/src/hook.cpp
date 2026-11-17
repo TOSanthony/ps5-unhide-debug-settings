@@ -1,28 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// vsh_signin_diag hook (v2, READ-ONLY): v1 tried to find a LIVE
-// VshNMPsnAccountModule instance via ReactNative.PUI.PUIReactApp's
-// GetAllRunningApps() (the same call ps5-syslang's find_live_language()
-// uses) -- but that function is itself only an exploratory/diagnostic path
-// in ps5-syslang (SYSLANG_DIAGNOSTIC==3), never its production route. Their
-// actual production path (change_system_language) never looks for a live
-// instance at all: it just mono_object_new()'s a fresh LanguageModule and
-// calls the method directly. Confirming that twice, on two separate runs
-// (including one with a settings screen reportedly open), GetAllRunningApps
-// returned 0 -- so it is evidently not tracking ShellUI's own built-in
-// screens the way we assumed.
+// vsh_signin_diag hook (v3, READ-ONLY): v2 guessed 7 namespaces for
+// VshNMPsnAccountModule in the two DLLs we already know exist
+// (Sce.Vsh.ShellUI.ReactNativeShellApp.dll, ReactNative.PUI.dll) and found
+// none of them -- confirmed on three separate runs, so the namespace-guess
+// strategy is exhausted, not just unlucky. The klog itself gives a concrete
+// clue the guesses missed: "Type:ReactNative.Vsh.Common.AppScene" and
+// "ReactNative.Views.UI3.View.ReactModalScene" show the real top-level
+// namespace tree is "ReactNative.Vsh.*" / "ReactNative.Views.*", not
+// "ReactNative.Modules.ShellUI.*" for everything.
 //
-// This version skips the live-app hunt entirely and goes straight at the
-// class's metadata: it tries resolving VshNMPsnAccountModule by name in
-// both DLLs the Welcome Hub's bridge code could plausibly live in
-// (Sce.Vsh.ShellUI.ReactNativeShellApp.dll, where LanguageModule lives, and
-// ReactNative.PUI.dll) across a handful of candidate namespaces, and for
-// whichever resolves, lists every method and field name via Mono's
-// reflection metadata iterators (mono_class_get_methods/get_fields) --
-// still read-only, no code is invoked. The goal: confirm the class exists
-// natively at all, in which assembly/namespace, and what its real
-// IsSignedIn/GetState signatures and backing fields look like, before ever
-// trying to call or mutate anything.
+// Rather than keep guessing namespace strings, this version reads the
+// TypeDef metadata table directly (mono_image_get_table_info +
+// mono_table_info_get_rows + mono_class_get, all plain ECMA-335/Mono
+// metadata APIs -- MONO_TABLE_TYPEDEF=2 and the 0x02000000 TypeDef token
+// tag are fixed values from the CLI spec, not version-fragile) and walks
+// EVERY class actually defined in each assembly, logging the ones whose
+// name or namespace contains a short account/sign-in-related substring.
+// This finds VshNMPsnAccountModule's real namespace regardless of what it
+// is, and as a side effect maps out the real "ReactNative.Vsh.*" tree for
+// next time. Still nothing is invoked or modified -- this only reads
+// metadata.
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -45,6 +43,24 @@ extern "C" void *memset(void *destination, int value, size_t size)
   return destination;
 }
 
+/* No <string.h> from the SDK's libc inside this freestanding hook. */
+static bool contains_ci(const char *haystack, const char *needle)
+{
+  if (!haystack || !needle || !*needle) return false;
+  for (const char *h = haystack; *h; ++h) {
+    const char *a = h;
+    const char *b = needle;
+    while (*a && *b) {
+      char ca = *a >= 'A' && *a <= 'Z' ? *a + 32 : *a;
+      char cb = *b >= 'A' && *b <= 'Z' ? *b + 32 : *b;
+      if (ca != cb) break;
+      ++a; ++b;
+    }
+    if (!*b) return true;
+  }
+  return false;
+}
+
 struct MonoDomain;
 struct MonoAssembly;
 struct MonoImage;
@@ -55,6 +71,7 @@ struct MonoObject;
 struct MonoThread;
 struct MonoClassField;
 struct MonoType;
+struct MonoTableInfo;
 
 static const vshsig_hook_args *g_hook_args;
 
@@ -82,8 +99,14 @@ static MonoMethodSignature *(*mono_method_signature)(MonoMethod *);
 static uint32_t (*mono_signature_get_param_count)(MonoMethodSignature *);
 static MonoClassField *(*mono_class_get_fields)(MonoClass *, void **);
 static const char *(*mono_field_get_name)(MonoClassField *);
+static const char *(*mono_class_get_namespace)(MonoClass *);
+static const MonoTableInfo *(*mono_image_get_table_info)(MonoImage *, int);
+static int (*mono_table_info_get_rows)(const MonoTableInfo *);
+static MonoClass *(*mono_class_get)(MonoImage *, uint32_t);
 
 #define LOG_PREFIX "[vsh-signin-diag]"
+#define MONO_TABLE_TYPEDEF 2
+#define MONO_TOKEN_TYPE_DEF 0x02000000u
 
 static void log_line(const char *fmt, ...)
 {
@@ -118,14 +141,16 @@ static bool resolve_mono(void)
          mono_type_get_object && mono_object_unbox &&
          mono_class_get_methods && mono_method_get_name &&
          mono_method_signature && mono_signature_get_param_count &&
-         mono_class_get_fields && mono_field_get_name;
+         mono_class_get_fields && mono_field_get_name &&
+         mono_class_get_namespace && mono_image_get_table_info &&
+         mono_table_info_get_rows && mono_class_get;
 }
 
 /* Logs every method and field name of klass (pure reflection metadata --
  * nothing is invoked, nothing is read from any object). */
 static void dump_class(MonoClass *klass, const char *label)
 {
-  log_line("%s: class=%s", label, mono_class_get_name(klass));
+  log_line("%s: full name=%s.%s", label, mono_class_get_namespace(klass), mono_class_get_name(klass));
 
   void *method_iter = nullptr;
   int method_count = 0;
@@ -146,11 +171,62 @@ static void dump_class(MonoClass *klass, const char *label)
   log_line("%s: %d field(s) total", label, field_count);
 }
 
-/* Tries every (assembly, namespace) combination we can plausibly guess for
- * VshNMPsnAccountModule and dumps whichever one resolves. Returns how many
- * resolved (ideally exactly one -- more would mean the name is ambiguous
- * across assemblies, which is itself useful to know). */
-static int probe_class_in(MonoDomain *domain, const char *dll_path, const char *dll_label)
+/* Walks every TypeDef row in image (the ground-truth class list -- no
+ * namespace guessing), logging any class whose namespace or name contains
+ * one of needles. Dumps the full method/field list for an exact name match
+ * on "VshNMPsnAccountModule". Returns the exact-match count. */
+static int scan_image(MonoImage *image, const char *dll_label)
+{
+  const MonoTableInfo *table = mono_image_get_table_info(image, MONO_TABLE_TYPEDEF);
+  if (!table) {
+    log_line("%s: no TypeDef table", dll_label);
+    return 0;
+  }
+  int rows = mono_table_info_get_rows(table);
+  log_line("%s: %d TypeDef row(s)", dll_label, rows);
+
+  static const char *const needles[] = {
+      "Account", "Psn", "SignIn", "Signin", "Auth", "Login", "Vsh", "Nm",
+  };
+
+  int exact_matches = 0;
+  int logged = 0;
+  for (int row = 0; row < rows; ++row) {
+    uint32_t token = MONO_TOKEN_TYPE_DEF | (uint32_t)(row + 1);
+    MonoClass *klass = mono_class_get(image, token);
+    if (!klass) continue;
+    const char *name = mono_class_get_name(klass);
+    const char *ns = mono_class_get_namespace(klass);
+    if (!name) continue;
+
+    bool interesting = false;
+    for (const char *needle : needles) {
+      if (contains_ci(name, needle) || contains_ci(ns, needle)) { interesting = true; break; }
+    }
+    if (!interesting) continue;
+
+    if (logged < 200) {
+      log_line("%s: %s.%s", dll_label, ns ? ns : "", name);
+      logged++;
+    }
+
+    /* Exact-name compare without <string.h>. */
+    const char *target = "VshNMPsnAccountModule";
+    const char *a = name;
+    const char *b = target;
+    while (*a && *b && *a == *b) { ++a; ++b; }
+    bool exact = (*a == 0 && *b == 0);
+    if (exact) {
+      exact_matches++;
+      log_line("%s: EXACT MATCH for VshNMPsnAccountModule at TypeDef row %d (token=%#x)", dll_label, row, token);
+      dump_class(klass, dll_label);
+    }
+  }
+  log_line("%s: scan complete, %d candidate(s) logged, %d exact match(es)", dll_label, logged, exact_matches);
+  return exact_matches;
+}
+
+static int probe_assembly(MonoDomain *domain, const char *dll_path, const char *dll_label)
 {
   MonoAssembly *assembly = mono_domain_assembly_open(domain, dll_path);
   if (!assembly) {
@@ -162,34 +238,12 @@ static int probe_class_in(MonoDomain *domain, const char *dll_path, const char *
     log_line("%s: no image", dll_label);
     return 0;
   }
-
-  static const char *const candidate_namespaces[] = {
-      "ReactNative.Modules.ShellUI.Settings",
-      "ReactNative.Modules.ShellUI.Account",
-      "ReactNative.Modules.ShellUI.Psn",
-      "ReactNative.Modules.ShellUI.Np",
-      "ReactNative.Modules.ShellUI",
-      "ReactNative.PUI",
-      "",
-  };
-
-  int found = 0;
-  for (const char *ns : candidate_namespaces) {
-    MonoClass *klass = mono_class_from_name(image, ns, "VshNMPsnAccountModule");
-    if (!klass) continue;
-    found++;
-    log_line("%s: VshNMPsnAccountModule FOUND in namespace \"%s\"", dll_label, *ns ? ns : "(global)");
-    dump_class(klass, dll_label);
-  }
-  if (!found) {
-    log_line("%s: VshNMPsnAccountModule not found in any candidate namespace", dll_label);
-  }
-  return found;
+  return scan_image(image, dll_label);
 }
 
 static int run_hook(void)
 {
-  log_line("hook v2 starting (read-only diagnostic, metadata-only)");
+  log_line("hook v3 starting (read-only diagnostic, full TypeDef scan)");
 
   if (!resolve_mono()) {
     log_line("not running in SceShellUI, or a required Mono export is missing");
@@ -210,9 +264,9 @@ static int run_hook(void)
   }
 
   int total_found = 0;
-  total_found += probe_class_in(domain, "/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeShellApp.dll",
+  total_found += probe_assembly(domain, "/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeShellApp.dll",
                                 "ReactNativeShellApp");
-  total_found += probe_class_in(domain, "/system_ex/common_ex/lib/ReactNative.PUI.dll", "ReactNative.PUI");
+  total_found += probe_assembly(domain, "/system_ex/common_ex/lib/ReactNative.PUI.dll", "ReactNative.PUI");
 
   log_line("done: VshNMPsnAccountModule resolved in %d place(s)", total_found);
   return total_found > 0 ? 0 : 2;
