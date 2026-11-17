@@ -79,8 +79,15 @@
     // The image is slightly smaller than its slot, so a selection border can
     // sit in that margin (an overlay border/opacity right on the image's own
     // edge could end up clipped by its own overflow:hidden corners).
-    gridFrame: { borderRadius: 8, borderWidth: 3, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
-    gridFrameSelected: { borderColor: '#ffffff' },
+    // A border drawn via borderWidth/borderColor on this frame turned out
+    // not to render in this runtime (it never showed up, regardless of
+    // paint order or the gap left for it). backgroundColor is confirmed
+    // working everywhere else in this widget (rowFocused, the mat, etc.),
+    // so the "border" here is really a solid white fill peeking out from
+    // behind the smaller, centered image -- same visual result, through a
+    // style property that's actually supported.
+    gridFrame: { borderRadius: 8, backgroundColor: 'transparent', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+    gridFrameSelected: { backgroundColor: '#ffffff' },
     gridImg: { borderRadius: 6, backgroundColor: '#263a58', overflow: 'hidden' },
     gridLabelBar: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#000000a0', paddingHorizontal: 6, paddingVertical: 3 },
     // Cover mode: the image fills the whole card edge to edge (no gap from
