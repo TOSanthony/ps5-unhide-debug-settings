@@ -63,9 +63,9 @@
   }, 350);
 
   var already = false;
-  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v24-done') === '1'; } catch (e) {}
+  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v25-done') === '1'; } catch (e) {}
   if (already) { return; }
-  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v24-done', '1'); } catch (e) {}
+  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v25-done', '1'); } catch (e) {}
 
   function ownKeys(obj) {
     try { return Object.getOwnPropertyNames(obj).join(','); } catch (e) { return 'n/a(' + e.message + ')'; }
@@ -87,8 +87,13 @@
       if (tc === undefined || tc === null) return;
       if (seenTargets[tc]) return;
       seenTargets[tc] = true;
-      queue('NEW targetComponent=' + tc + ' -- wh.__hubFrame: ' + safeStr(wh.__hubFrame, 0));
-      queue('NEW targetComponent=' + tc + ' -- wh.dims: ' + safeStr(wh.dims, 0) + ' wh.WidgetSize: ' + safeStr(wh.WidgetSize, 0));
+      // __hubFrame and dims are FUNCTIONS (confirmed by v24) -- call them to
+      // get whatever live value they compute, instead of just naming them.
+      var hubFrameVal, hubFrameErr, dimsVal, dimsErr;
+      try { hubFrameVal = typeof wh.__hubFrame === 'function' ? wh.__hubFrame() : wh.__hubFrame; } catch (e) { hubFrameErr = e; }
+      try { dimsVal = typeof wh.dims === 'function' ? wh.dims() : wh.dims; } catch (e) { dimsErr = e; }
+      queue('NEW targetComponent=' + tc + ' -- wh.__hubFrame(): ' + (hubFrameErr ? ('THREW ' + (hubFrameErr.message || hubFrameErr)) : safeStr(hubFrameVal, 0)));
+      queue('NEW targetComponent=' + tc + ' -- wh.dims(): ' + (dimsErr ? ('THREW ' + (dimsErr.message || dimsErr)) : safeStr(dimsVal, 0)));
     } catch (e) {
       queue('maybeDumpHubFrameFor EXCEPTION: ' + (e && e.message ? e.message : e));
     }
@@ -173,7 +178,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    queue('wh-inspector v24 probe installed -- navigate between widgets on the Hub now to trigger logged calls');
+    queue('wh-inspector v25 probe installed -- navigate between widgets on the Hub now to trigger logged calls');
   } catch (e) {
     sendNow('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
   }
