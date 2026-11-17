@@ -25,7 +25,13 @@
   X(mono_field_get_value) \
   X(mono_class_get_type) \
   X(mono_type_get_object) \
-  X(mono_object_unbox)
+  X(mono_object_unbox) \
+  X(mono_class_get_methods) \
+  X(mono_method_get_name) \
+  X(mono_method_signature) \
+  X(mono_signature_get_param_count) \
+  X(mono_class_get_fields) \
+  X(mono_field_get_name)
 
 struct vshsig_hook_args {
   uintptr_t format;

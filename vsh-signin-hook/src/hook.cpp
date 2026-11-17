@@ -1,27 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// vsh_signin_diag hook (v1, READ-ONLY): runs inside SceShellUI's Mono domain
-// (injected the same way ps5-syslang injects its LanguageModule hook -- see
-// README.md) and finds the live VshNMPsnAccountModule instance that backs
-// the Welcome Hub's IsSignedIn/GetState calls, by walking the same object
-// graph hub-signin-patch's widget.js reaches from the JS side, but from the
-// native/Mono side instead: GetAllRunningApps() -> each app's
-// _reactContext -> NMRegistry -> _moduleInstances (a Dictionary<Type,object>
-// of every NativeModule live in that app), which this enumerates entry by
-// entry logging each value's class name.
+// vsh_signin_diag hook (v2, READ-ONLY): v1 tried to find a LIVE
+// VshNMPsnAccountModule instance via ReactNative.PUI.PUIReactApp's
+// GetAllRunningApps() (the same call ps5-syslang's find_live_language()
+// uses) -- but that function is itself only an exploratory/diagnostic path
+// in ps5-syslang (SYSLANG_DIAGNOSTIC==3), never its production route. Their
+// actual production path (change_system_language) never looks for a live
+// instance at all: it just mono_object_new()'s a fresh LanguageModule and
+// calls the method directly. Confirming that twice, on two separate runs
+// (including one with a settings screen reportedly open), GetAllRunningApps
+// returned 0 -- so it is evidently not tracking ShellUI's own built-in
+// screens the way we assumed.
 //
-// It does NOT call IsSignedIn/GetState/any module method, and does NOT
-// write to any field: those methods' real argument count (a Promise
-// parameter, as ChangeSystemLanguage(int,Promise) takes, or something else
-// entirely) is not yet confirmed, and mono_runtime_invoke does not check
-// arity -- calling it with a guessed wrong arg count is an out-of-bounds
-// read, a real crash risk, not merely a "might fail safely" guess. This
-// pass only uses methods whose 0-argument signature is fixed by the .NET
-// BCL itself (IEnumerator.MoveNext/Current, KeyValuePair.Key/Value,
-// List<T>.get_Count/get_Item used the same way by ps5-syslang's own
-// find_live_language) -- so finding the module's live address is proven
-// safe; calling its sign-in methods is the next step, once this confirms
-// where it lives and (from a follow-up read of its fields) what it expects.
+// This version skips the live-app hunt entirely and goes straight at the
+// class's metadata: it tries resolving VshNMPsnAccountModule by name in
+// both DLLs the Welcome Hub's bridge code could plausibly live in
+// (Sce.Vsh.ShellUI.ReactNativeShellApp.dll, where LanguageModule lives, and
+// ReactNative.PUI.dll) across a handful of candidate namespaces, and for
+// whichever resolves, lists every method and field name via Mono's
+// reflection metadata iterators (mono_class_get_methods/get_fields) --
+// still read-only, no code is invoked. The goal: confirm the class exists
+// natively at all, in which assembly/namespace, and what its real
+// IsSignedIn/GetState signatures and backing fields look like, before ever
+// trying to call or mutate anything.
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -44,27 +45,17 @@ extern "C" void *memset(void *destination, int value, size_t size)
   return destination;
 }
 
-/* Same reasoning: no <string.h> from the SDK's libc inside this hook. */
-static bool name_is(const char *a, const char *b)
-{
-  if (!a || !b) return false;
-  size_t i = 0;
-  for (; a[i] && b[i]; ++i)
-    if (a[i] != b[i]) return false;
-  return a[i] == b[i];
-}
-
 struct MonoDomain;
 struct MonoAssembly;
 struct MonoImage;
 struct MonoClass;
 struct MonoMethod;
+struct MonoMethodSignature;
 struct MonoObject;
 struct MonoThread;
 struct MonoClassField;
 struct MonoType;
 
-static MonoDomain *g_root_domain;
 static const vshsig_hook_args *g_hook_args;
 
 static MonoDomain *(*mono_get_root_domain)(void);
@@ -85,6 +76,12 @@ static void (*mono_field_get_value)(MonoObject *, MonoClassField *, void *);
 static MonoType *(*mono_class_get_type)(MonoClass *); /* resolved, unused by this diagnostic pass */
 static MonoObject *(*mono_type_get_object)(MonoDomain *, MonoType *);
 static void *(*mono_object_unbox)(MonoObject *);
+static MonoMethod *(*mono_class_get_methods)(MonoClass *, void **);
+static const char *(*mono_method_get_name)(MonoMethod *);
+static MonoMethodSignature *(*mono_method_signature)(MonoMethod *);
+static uint32_t (*mono_signature_get_param_count)(MonoMethodSignature *);
+static MonoClassField *(*mono_class_get_fields)(MonoClass *, void **);
+static const char *(*mono_field_get_name)(MonoClassField *);
 
 #define LOG_PREFIX "[vsh-signin-diag]"
 
@@ -118,134 +115,106 @@ static bool resolve_mono(void)
          mono_gchandle_free && mono_thread_detach &&
          mono_object_get_class && mono_class_get_name &&
          mono_class_get_field_from_name && mono_field_get_value &&
-         mono_type_get_object && mono_object_unbox;
+         mono_type_get_object && mono_object_unbox &&
+         mono_class_get_methods && mono_method_get_name &&
+         mono_method_signature && mono_signature_get_param_count &&
+         mono_class_get_fields && mono_field_get_name;
 }
 
-static MonoObject *read_reference(MonoObject *object, const char *name)
+/* Logs every method and field name of klass (pure reflection metadata --
+ * nothing is invoked, nothing is read from any object). */
+static void dump_class(MonoClass *klass, const char *label)
 {
-  if (!object) return nullptr;
-  MonoClassField *field = mono_class_get_field_from_name(mono_object_get_class(object), name);
-  MonoObject *value = nullptr;
-  if (field) mono_field_get_value(object, field, &value);
-  return value;
-}
+  log_line("%s: class=%s", label, mono_class_get_name(klass));
 
-static MonoObject *call_object(MonoClass *klass, MonoObject *object,
-                               const char *name, int argc, void **args = nullptr)
-{
-  MonoMethod *method = mono_class_get_method_from_name(klass, name, argc);
-  if (!method) {
-    log_line("method missing: %s::%s", mono_class_get_name(klass), name);
-    return nullptr;
+  void *method_iter = nullptr;
+  int method_count = 0;
+  MonoMethod *method;
+  while ((method = mono_class_get_methods(klass, &method_iter)) != nullptr) {
+    MonoMethodSignature *sig = mono_method_signature(method);
+    uint32_t argc = sig ? mono_signature_get_param_count(sig) : 0xffffffffu;
+    log_line("%s: method #%d: %s (argc=%u)", label, method_count++, mono_method_get_name(method), argc);
   }
-  MonoObject *exception = nullptr;
-  MonoObject *result = mono_runtime_invoke(method, object, args, &exception);
-  if (exception) {
-    log_line("%s exception: %s", name, mono_class_get_name(mono_object_get_class(exception)));
-    return nullptr;
+  log_line("%s: %d method(s) total", label, method_count);
+
+  void *field_iter = nullptr;
+  int field_count = 0;
+  MonoClassField *field;
+  while ((field = mono_class_get_fields(klass, &field_iter)) != nullptr) {
+    log_line("%s: field #%d: %s", label, field_count++, mono_field_get_name(field));
   }
-  return result;
+  log_line("%s: %d field(s) total", label, field_count);
 }
 
-/* Walks one app's NMRegistry._moduleInstances (Dictionary<Type,object>) and
- * logs every live module's class name, flagging VshNMPsnAccountModule. All
- * calls below (GetEnumerator/MoveNext/get_Current/get_Key/get_Value) are
- * fixed 0-argument BCL signatures, same safety class as the get_Count/
- * get_Item calls ps5-syslang's own find_live_language already relies on. */
-static int scan_module_dictionary(MonoObject *modules, int app_index)
+/* Tries every (assembly, namespace) combination we can plausibly guess for
+ * VshNMPsnAccountModule and dumps whichever one resolves. Returns how many
+ * resolved (ideally exactly one -- more would mean the name is ambiguous
+ * across assemblies, which is itself useful to know). */
+static int probe_class_in(MonoDomain *domain, const char *dll_path, const char *dll_label)
 {
-  if (!modules) return 0;
-  MonoClass *dict_class = mono_object_get_class(modules);
-  MonoObject *enumerator = call_object(dict_class, modules, "GetEnumerator", 0);
-  if (!enumerator) {
-    log_line("app[%d]: _moduleInstances has no GetEnumerator -- unexpected shape", app_index);
+  MonoAssembly *assembly = mono_domain_assembly_open(domain, dll_path);
+  if (!assembly) {
+    log_line("%s: assembly not found", dll_label);
     return 0;
   }
-  uint32_t enum_handle = mono_gchandle_new(enumerator, 1);
-  MonoClass *enum_class = mono_object_get_class(enumerator);
-
-  int count = 0;
-  int found = 0;
-  for (int guard = 0; guard < 4096; ++guard) {
-    MonoObject *more = call_object(enum_class, enumerator, "MoveNext", 0);
-    if (!more || !*(uint8_t *)mono_object_unbox(more)) break;
-
-    MonoObject *entry = call_object(enum_class, enumerator, "get_Current", 0);
-    if (!entry) continue;
-    MonoClass *entry_class = mono_object_get_class(entry);
-    MonoObject *value = call_object(entry_class, entry, "get_Value", 0);
-    if (!value) continue;
-
-    const char *class_name = mono_class_get_name(mono_object_get_class(value));
-    count++;
-    if (name_is(class_name, "VshNMPsnAccountModule")) {
-      log_line("app[%d] module #%d: %s  <-- MATCH, live instance=%p", app_index, count, class_name, (void *)value);
-      found++;
-    } else {
-      log_line("app[%d] module #%d: %s", app_index, count, class_name ? class_name : "(unnamed)");
-    }
+  MonoImage *image = mono_assembly_get_image(assembly);
+  if (!image) {
+    log_line("%s: no image", dll_label);
+    return 0;
   }
-  mono_gchandle_free(enum_handle);
-  log_line("app[%d]: %d module(s) enumerated, %d match(es) for VshNMPsnAccountModule", app_index, count, found);
+
+  static const char *const candidate_namespaces[] = {
+      "ReactNative.Modules.ShellUI.Settings",
+      "ReactNative.Modules.ShellUI.Account",
+      "ReactNative.Modules.ShellUI.Psn",
+      "ReactNative.Modules.ShellUI.Np",
+      "ReactNative.Modules.ShellUI",
+      "ReactNative.PUI",
+      "",
+  };
+
+  int found = 0;
+  for (const char *ns : candidate_namespaces) {
+    MonoClass *klass = mono_class_from_name(image, ns, "VshNMPsnAccountModule");
+    if (!klass) continue;
+    found++;
+    log_line("%s: VshNMPsnAccountModule FOUND in namespace \"%s\"", dll_label, *ns ? ns : "(global)");
+    dump_class(klass, dll_label);
+  }
+  if (!found) {
+    log_line("%s: VshNMPsnAccountModule not found in any candidate namespace", dll_label);
+  }
   return found;
 }
 
 static int run_hook(void)
 {
-  log_line("hook starting (read-only diagnostic)");
+  log_line("hook v2 starting (read-only diagnostic, metadata-only)");
 
   if (!resolve_mono()) {
-    log_line("not running in SceShellUI");
+    log_line("not running in SceShellUI, or a required Mono export is missing");
     return 1;
   }
 
   MonoDomain *current_domain = mono_domain_get();
   MonoDomain *root_domain = mono_get_root_domain();
   log_line("Mono domains: current=%p root=%p", current_domain, root_domain);
-  g_root_domain = current_domain ? current_domain : root_domain;
-  if (!g_root_domain) {
+  MonoDomain *domain = current_domain ? current_domain : root_domain;
+  if (!domain) {
     log_line("Mono domain not found");
     return 1;
   }
-  if (!current_domain && !mono_thread_attach(g_root_domain)) {
+  if (!current_domain && !mono_thread_attach(domain)) {
     log_line("Mono attach failed");
     return 1;
   }
 
-  MonoAssembly *assembly = mono_domain_assembly_open(
-      g_root_domain, "/system_ex/common_ex/lib/ReactNative.PUI.dll");
-  MonoImage *image = assembly ? mono_assembly_get_image(assembly) : nullptr;
-  MonoClass *app_class = image ? mono_class_from_name(image, "ReactNative.PUI", "PUIReactApp") : nullptr;
-  if (!app_class) {
-    log_line("PUIReactApp not found");
-    return 1;
-  }
-
-  MonoObject *apps = call_object(app_class, nullptr, "GetAllRunningApps", 0);
-  if (!apps) {
-    log_line("GetAllRunningApps failed");
-    return 1;
-  }
-  uint32_t apps_handle = mono_gchandle_new(apps, 1);
-  MonoClass *list_class = mono_object_get_class(apps);
-  MonoObject *count_box = call_object(list_class, apps, "get_Count", 0);
-  int app_count = count_box ? *(int *)mono_object_unbox(count_box) : 0;
-  log_line("running React apps=%d", app_count);
-
   int total_found = 0;
-  for (int index = 0; index < app_count && index < 64; ++index) {
-    void *item_args[] = {&index};
-    MonoObject *app = call_object(list_class, apps, "get_Item", 1, item_args);
-    MonoObject *context = read_reference(app, "_reactContext");
-    MonoObject *registry = context ? call_object(mono_object_get_class(context), context,
-                                                "get_NMRegistry", 0) : nullptr;
-    MonoObject *modules = read_reference(registry, "_moduleInstances");
-    log_line("app[%d]: context=%p registry=%p moduleInstances=%p", index, context, registry, modules);
-    total_found += scan_module_dictionary(modules, index);
-  }
-  mono_gchandle_free(apps_handle);
+  total_found += probe_class_in(domain, "/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeShellApp.dll",
+                                "ReactNativeShellApp");
+  total_found += probe_class_in(domain, "/system_ex/common_ex/lib/ReactNative.PUI.dll", "ReactNative.PUI");
 
-  log_line("done: %d total match(es) for VshNMPsnAccountModule across %d app(s)", total_found, app_count);
+  log_line("done: VshNMPsnAccountModule resolved in %d place(s)", total_found);
   return total_found > 0 ? 0 : 2;
 }
 
