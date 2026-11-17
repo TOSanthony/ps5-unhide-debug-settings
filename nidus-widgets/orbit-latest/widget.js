@@ -252,7 +252,12 @@
     // here, instead of using the full tile, leaves it room without touching
     // any game.
     var footerReserve = compact ? 0 : 56; // DEFAULT tiles are too short to spare this
-    var innerW = W - pad, innerH = H - pad - titleH - gap - footerReserve;
+    // The card itself is built footerReserve px shorter than H below (so
+    // that strip is outside it, not just blank padding inside it) -- so the
+    // content layout here only needs to fit the card's own (shorter) height,
+    // not subtract the reserve a second time.
+    var cardH = H - footerReserve;
+    var innerW = W - pad, innerH = cardH - pad - titleH - gap;
 
     // Cover mode, once there's something to show: the cover fills the whole
     // tile edge to edge (no card padding, no separate header row) -- the
@@ -278,9 +283,20 @@
     var badge = data.loading ? null : (total ? total + ' jeu' + (total === 1 ? '' : 'x') : null);
     var header = ce(wh.Title, { iconId: cfg.iconId || 'game', badge: badge, style: { marginBottom: 8 } }, cfg.title || 'Orbit Store');
 
-    return ce(View, { style: [styles.card, { width: W, height: H }] },
-      ce(View, { lightMat: 'auto', style: styles.mat }),
-      ce(View, { style: styles.body }, header, body)
+    // The card's own rounded background stops footerReserve px short of the
+    // full tile height (outer box stays W x H -- the Hub still needs that
+    // for grid layout/scrolling), so that reserved strip is genuinely
+    // outside our card, showing the Hub's own background through, exactly
+    // like Accessibility's shorter card leaves room below it. Reserving the
+    // space only inside the body (padding) left it still painted with our
+    // own mat background -- the key-guide bar then sat inside our rounded
+    // card instead of below it, just no longer over a game (confirmed
+    // on-console).
+    return ce(View, { style: { width: W, height: H } },
+      ce(View, { style: [styles.card, { width: W, height: cardH }] },
+        ce(View, { lightMat: 'auto', style: styles.mat }),
+        ce(View, { style: styles.body }, header, body)
+      )
     );
   }
 
