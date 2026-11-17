@@ -18,7 +18,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <dirent.h>
 #include <ps5/kernel.h>
+#include <ps5/klog.h>
 
 #include "elfldr.h"
 #include "pt.h"
@@ -51,9 +53,40 @@ static void notify(const char *fmt, ...)
   sceKernelSendNotificationRequest(0, &request, sizeof(request), 0);
 }
 
+/* v3's full TypeDef scan ruled out VshNMPsnAccountModule being in either
+ * Sce.Vsh.ShellUI.ReactNativeShellApp.dll or ReactNative.PUI.dll -- but it
+ * did surface a real ReactNative.Modules.ShellUI.LoginMgr.* namespace
+ * family (LoginMgrModule, SigninUtility, etc.) living inside
+ * ReactNativeShellApp.dll. The account/sign-in module is most likely in a
+ * third assembly we haven't opened yet. Rather than guess a DLL name to
+ * feed Mono, just list what's actually in the directory both known DLLs
+ * live in -- this needs no injection, no ptrace, nothing but a plain
+ * directory read with the loader's own filesystem access (same level
+ * other probes in this repo already use to fopen() their own logs). */
+static void list_shellui_lib_dir(void)
+{
+  static const char *const dir_path = "/system_ex/common_ex/lib";
+  DIR *dir = opendir(dir_path);
+  if (!dir) {
+    klog_printf("[vsh-signin-diag-loader] opendir(%s) failed\n", dir_path);
+    return;
+  }
+  int count = 0;
+  struct dirent *entry;
+  while ((entry = readdir(dir)) != NULL) {
+    if (entry->d_name[0] == '.') continue;
+    klog_printf("[vsh-signin-diag-loader] lib entry: %s\n", entry->d_name);
+    count++;
+  }
+  closedir(dir);
+  klog_printf("[vsh-signin-diag-loader] %s: %d entries\n", dir_path, count);
+}
+
 int main(void)
 {
   setvbuf(stdout, NULL, _IONBF, 0);
+
+  list_shellui_lib_dir();
 
   if (elfldr_sanity_check(shellui_hook_elf, shellui_hook_elf_len)) {
     notify("embedded hook ELF is invalid");
