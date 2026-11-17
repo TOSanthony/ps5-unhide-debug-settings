@@ -283,20 +283,17 @@
     var badge = data.loading ? null : (total ? total + ' jeu' + (total === 1 ? '' : 'x') : null);
     var header = ce(wh.Title, { iconId: cfg.iconId || 'game', badge: badge, style: { marginBottom: 8 } }, cfg.title || 'Orbit Store');
 
-    // The card's own rounded background stops footerReserve px short of the
-    // full tile height (outer box stays W x H -- the Hub still needs that
-    // for grid layout/scrolling), so that reserved strip is genuinely
-    // outside our card, showing the Hub's own background through, exactly
-    // like Accessibility's shorter card leaves room below it. Reserving the
-    // space only inside the body (padding) left it still painted with our
-    // own mat background -- the key-guide bar then sat inside our rounded
-    // card instead of below it, just no longer over a game (confirmed
-    // on-console).
-    return ce(View, { style: { width: W, height: H } },
-      ce(View, { style: [styles.card, { width: W, height: cardH }] },
-        ce(View, { lightMat: 'auto', style: styles.mat }),
-        ce(View, { style: styles.body }, header, body)
-      )
+    // The card is footerReserve px shorter than the tile -- and, this time,
+    // returned directly as the root (no full-W x H wrapper around it). The
+    // native focus highlight/key-guide bar wrap whatever we actually return
+    // as root, not a fixed slot size (confirmed on-console: Accessibility's
+    // own shorter card gets a focus outline that hugs its real height, with
+    // the key-guide bar below that outline, on the Hub's own background). An
+    // outer full-height wrapper here would recreate exactly that full-size
+    // bounding box and put things back where they were.
+    return ce(View, { style: [styles.card, { width: W, height: cardH }] },
+      ce(View, { lightMat: 'auto', style: styles.mat }),
+      ce(View, { style: styles.body }, header, body)
     );
   }
 
