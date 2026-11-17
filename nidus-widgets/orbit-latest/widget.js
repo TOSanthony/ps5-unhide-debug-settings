@@ -70,12 +70,13 @@
     small: { fontSize: F.Size4XSmall },   // 15
     body18: { fontSize: F.Size3XSmall },  // 18
     gridRow: { flexDirection: 'row' },
-    gridCell: { borderRadius: 8, backgroundColor: '#263a58', overflow: 'hidden', position: 'relative' },
-    gridCellFocused: { backgroundColor: '#3a568a' },
-    // Drawn as a sibling on top of the cover image, since the image covers
-    // the cell completely and a focusedStyle background behind it would
-    // never actually show -- this is how you can tell which game you're on.
-    gridCellSelected: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderWidth: 3, borderColor: '#ffffff', borderRadius: 8 },
+    gridSlot: { alignItems: 'center', justifyContent: 'center' },
+    // The image is slightly smaller than its slot, so a selection border can
+    // sit in that margin (an overlay border/opacity right on the image's own
+    // edge could end up clipped by its own overflow:hidden corners).
+    gridFrame: { borderRadius: 8, borderWidth: 3, borderColor: 'transparent', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
+    gridFrameSelected: { borderColor: '#ffffff' },
+    gridImg: { borderRadius: 6, backgroundColor: '#263a58', overflow: 'hidden' },
     gridLabelBar: { position: 'absolute', left: 0, right: 0, bottom: 0, backgroundColor: '#000000a0', paddingHorizontal: 6, paddingVertical: 3 },
     // Cover mode: the image fills the whole card edge to edge (no gap from
     // the card's own padding), title/dots overlaid on a bottom strip.
@@ -87,16 +88,7 @@
     coverTitle: { color: '#ffffff' },
     coverDots: { flexDirection: 'row', justifyContent: 'center', marginTop: 6 },
     coverDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#ffffff40', marginHorizontal: 3 },
-    coverDotActive: { backgroundColor: '#ffffff', width: 16 },
-    // A button-hint footer baked into the widget's own card. The stock
-    // key-guide bar (input-and-focus.md) only labels its own fixed cases
-    // (Options -> Settings, X -> Select/Edit, arrows/L1/R1 while INSIDE a
-    // wh.Focusable tile) -- confirmed on-console it shows nothing for cover
-    // mode's custom L1/R1/X, since there's deliberately no Focusable here.
-    hintDivider: { height: 1, backgroundColor: '#ffffff30', marginTop: 8, marginBottom: 6 },
-    hintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-    hintBadge: { borderWidth: 1, borderColor: '#ffffffa0', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, marginRight: 6 },
-    hintLabel: { color: '#ffffffc0', marginRight: 16 }
+    coverDotActive: { backgroundColor: '#ffffff', width: 16 }
   });
 
   // A per-game catalog row: X (or press) launches Orbit Store. wh.Focusable
@@ -125,34 +117,24 @@
   // tile with the title overlaid on a dark strip instead of beside it, so no
   // extra row height is spent on the label.
   function GridCell(props) {
-    var item = props.item, size = props.size;
-    return ce(wh.Focusable, {
-      onPress: props.onPress,
-      style: [styles.gridCell, { width: size, height: size }],
-      focusedStyle: styles.gridCellFocused
-    }, function (selected) {
-      // A border overlay can be hidden behind the cover image depending on
-      // paint order, so the main indicator is opacity: the selected cell is
-      // full brightness, every other one is dimmed -- unmissable regardless
-      // of stacking, and it's how you tell which game you're on while
-      // arrowing around the grid.
-      return ce(View, { style: { width: size, height: size, opacity: selected ? 1 : 0.45 } },
-        Image && item.cover
-          ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: size, height: size } })
-          : null,
-        ce(View, { style: styles.gridLabelBar },
-          ce(Label, { style: styles.small, numberOfLines: 1 }, String(item.title || item.titleId || '?'))),
-        selected ? ce(View, { style: styles.gridCellSelected }) : null
-      );
-    });
-  }
-
-  // One "[L1] Label" pair for the hint footer below.
-  function Hint(props) {
-    return ce(View, { style: { flexDirection: 'row', alignItems: 'center' } },
-      ce(View, { style: styles.hintBadge }, ce(Label, { style: styles.small }, props.button)),
-      ce(Label, { style: [styles.small, styles.hintLabel] }, props.label)
-    );
+    var item = props.item, slot = props.size;
+    // The image sits inside a bordered frame a few px smaller than the slot,
+    // so the white selection border has room to show around it instead of
+    // getting clipped at the image's own edge.
+    var frame = slot - 4;
+    var img = frame - 8;
+    return ce(wh.Focusable, { onPress: props.onPress, style: { width: slot, height: slot, alignItems: 'center', justifyContent: 'center' } },
+      function (selected) {
+        return ce(View, { style: [styles.gridFrame, selected ? styles.gridFrameSelected : null, { width: frame, height: frame }] },
+          ce(View, { style: [styles.gridImg, { width: img, height: img }] },
+            Image && item.cover
+              ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: img, height: img } })
+              : null,
+            ce(View, { style: styles.gridLabelBar },
+              ce(Label, { style: styles.small, numberOfLines: 1 }, String(item.title || item.titleId || '?')))
+          )
+        );
+      });
   }
 
   // The PS Store-style pagination strip under a full-tile cover: a dot per
@@ -295,28 +277,32 @@
     return ce(View, null, rows);
   }
 
-  // Grid mode: a fixed 3 columns (the tile's width never changes, only its
-  // height does), as many rows as fit. Arrows/L1/R1 already move between
-  // cells by screen position -- the SDK's own wh.Focusable behaviour.
-  var GRID_COLUMNS = 3;
+  // Grid mode: always a fixed 3x3 -- 9 equal squares, never a different
+  // count or size depending on how many games there are or how tall the
+  // tile happens to be. Arrows/L1/R1 already move between cells by screen
+  // position -- the SDK's own wh.Focusable behaviour.
+  var GRID_COLUMNS = 3, GRID_ROWS = 3;
   function renderGrid(allItems, innerW, innerH, openItem) {
     var gap = 8;
-    var cellSize = Math.floor((innerW - gap * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
-    var rows = Math.max(1, Math.floor((innerH + gap) / (cellSize + gap)));
-    var items = allItems.slice(0, rows * GRID_COLUMNS);
+    var byWidth = Math.floor((innerW - gap * (GRID_COLUMNS - 1)) / GRID_COLUMNS);
+    var byHeight = Math.floor((innerH - gap * (GRID_ROWS - 1)) / GRID_ROWS);
+    var cellSize = Math.min(byWidth, byHeight); // keep every square the same size
+    var items = allItems.slice(0, GRID_COLUMNS * GRID_ROWS);
     var lines = [];
-    for (var r = 0; r < Math.ceil(items.length / GRID_COLUMNS); r++) {
+    for (var r = 0; r < GRID_ROWS; r++) {
       var cells = [];
       for (var col = 0; col < GRID_COLUMNS; col++) {
         var idx = r * GRID_COLUMNS + col;
-        if (idx >= items.length) break;
-        var item = items[idx];
-        cells.push(ce(GridCell, {
-          key: item.id || item.titleId || idx,
-          item: item,
-          size: cellSize,
-          onPress: (function (it) { return function () { openItem(it); }; })(item)
-        }));
+        if (idx >= items.length) { cells.push(ce(View, { key: 'e' + idx, style: { width: cellSize, height: cellSize } })); }
+        else {
+          var item = items[idx];
+          cells.push(ce(GridCell, {
+            key: item.id || item.titleId || idx,
+            item: item,
+            size: cellSize,
+            onPress: (function (it) { return function () { openItem(it); }; })(item)
+          }));
+        }
         if (col < GRID_COLUMNS - 1) cells.push(ce(View, { key: 'g' + idx, style: { width: gap } }));
       }
       lines.push(ce(View, { key: 'row' + r, style: [styles.gridRow, r > 0 ? { marginTop: gap } : null] }, cells));
@@ -341,12 +327,7 @@
             ce(Label, { style: styles.dim }, '?')),
       ce(View, { style: styles.coverOverlay },
         ce(Label, { style: [styles.body18, styles.coverTitle], numberOfLines: 1 }, String(item.title || item.titleId || '?')),
-        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null,
-        ce(View, { style: styles.hintDivider }),
-        ce(View, { style: styles.hintRow },
-          allItems.length > 1 ? ce(Hint, { button: 'L1/R1', label: 'Jeu suivant' }) : null,
-          ce(Hint, { button: 'X', label: 'Lancer' })
-        )
+        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null
       )
     );
   }
