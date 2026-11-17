@@ -242,22 +242,7 @@
     var H = (props && props.height) || 152;
     var compact = H < 300;              // DEFAULT (152)
     var pad = 32, titleH = 40, gap = 8;
-    // The Hub's own key-guide hint bar (Edit/Prev/Next/Settings) is an
-    // overlay anchored to the bottom of whichever tile is focused -- stock
-    // widgets whose own content stops short of the tile's real bottom edge
-    // (e.g. Accessibility's icon+text) never collide with it, since it has
-    // empty space to sit in; ours filled the tile edge to edge (confirmed
-    // on-console: the games/covers of a full-bleed layout get overlapped by
-    // it, same as PS Store/PS Plus's own cover art). Reserving blank space
-    // here, instead of using the full tile, leaves it room without touching
-    // any game.
-    var footerReserve = compact ? 0 : 56; // DEFAULT tiles are too short to spare this
-    // The card itself is built footerReserve px shorter than H below (so
-    // that strip is outside it, not just blank padding inside it) -- so the
-    // content layout here only needs to fit the card's own (shorter) height,
-    // not subtract the reserve a second time.
-    var cardH = H - footerReserve;
-    var innerW = W - pad, innerH = cardH - pad - titleH - gap;
+    var innerW = W - pad, innerH = H - pad - titleH - gap;
 
     // Cover mode, once there's something to show: the cover fills the whole
     // tile edge to edge (no card padding, no separate header row) -- the
@@ -283,15 +268,7 @@
     var badge = data.loading ? null : (total ? total + ' jeu' + (total === 1 ? '' : 'x') : null);
     var header = ce(wh.Title, { iconId: cfg.iconId || 'game', badge: badge, style: { marginBottom: 8 } }, cfg.title || 'Orbit Store');
 
-    // The card is footerReserve px shorter than the tile -- and, this time,
-    // returned directly as the root (no full-W x H wrapper around it). The
-    // native focus highlight/key-guide bar wrap whatever we actually return
-    // as root, not a fixed slot size (confirmed on-console: Accessibility's
-    // own shorter card gets a focus outline that hugs its real height, with
-    // the key-guide bar below that outline, on the Hub's own background). An
-    // outer full-height wrapper here would recreate exactly that full-size
-    // bounding box and put things back where they were.
-    return ce(View, { style: [styles.card, { width: W, height: cardH }] },
+    return ce(View, { style: [styles.card, { width: W, height: H }] },
       ce(View, { lightMat: 'auto', style: styles.mat }),
       ce(View, { style: styles.body }, header, body)
     );
