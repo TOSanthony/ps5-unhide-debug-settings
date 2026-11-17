@@ -7,7 +7,9 @@ endif
 # Needs sqlite3.c + sqlite3.h (SQLite "amalgamation") in this folder.
 # vda_probe.elf is a temporary read-only diagnostic (see vda-probe/vda_probe.c); remove it
 # once the Ghostpad VDA-signature/Mbus-NID investigation is done.
-ELFS := dashboard.elf vda_probe.elf
+# wh_signin_probe.elf is a temporary read-only diagnostic (see wh-signin-probe/wh_signin_probe.c);
+# remove it once the Welcome Hub's process name is confirmed and noted in dashboard.c.
+ELFS := dashboard.elf vda_probe.elf wh_signin_probe.elf
 CFLAGS := -O2 -Wall -I. \
 	-DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
 	-DSQLITE_OMIT_SHARED_CACHE -DSQLITE_TEMP_STORE=3
@@ -22,6 +24,9 @@ dashboard.elf: dashboard/dashboard.c dashboard/dashboard_page.h dashboard/hub_pa
 
 vda_probe.elf: vda-probe/vda_probe.c vda-probe/pt/pt.c vda-probe/pt/pt.h vda-probe/pt/log.h
 	$(CC) -Wall -O2 -Ivda-probe -o $@ vda-probe/vda_probe.c vda-probe/pt/pt.c
+
+wh_signin_probe.elf: wh-signin-probe/wh_signin_probe.c
+	$(CC) -Wall -O2 -o $@ wh-signin-probe/wh_signin_probe.c
 
 clean:
 	rm -f $(ELFS) sqlite3.o
