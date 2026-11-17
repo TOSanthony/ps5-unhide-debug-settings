@@ -25,8 +25,8 @@ dashboard.elf: dashboard/dashboard.c dashboard/dashboard_page.h dashboard/hub_pa
 vda_probe.elf: vda-probe/vda_probe.c vda-probe/pt/pt.c vda-probe/pt/pt.h vda-probe/pt/log.h
 	$(CC) -Wall -O2 -Ivda-probe -o $@ vda-probe/vda_probe.c vda-probe/pt/pt.c
 
-wh_signin_probe.elf: wh-signin-probe/wh_signin_probe.c
-	$(CC) -Wall -O2 -o $@ wh-signin-probe/wh_signin_probe.c
+wh_signin_probe.elf: wh-signin-probe/wh_signin_probe.c wh-signin-probe/pt/pt.c wh-signin-probe/pt/pt.h wh-signin-probe/pt/log.h
+	$(CC) -Wall -O2 -Iwh-signin-probe -o $@ wh-signin-probe/wh_signin_probe.c wh-signin-probe/pt/pt.c
 
 clean:
 	rm -f $(ELFS) sqlite3.o
