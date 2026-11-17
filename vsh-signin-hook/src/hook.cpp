@@ -243,7 +243,7 @@ static int probe_assembly(MonoDomain *domain, const char *dll_path, const char *
 
 static int run_hook(void)
 {
-  log_line("hook v3 starting (read-only diagnostic, full TypeDef scan)");
+  log_line("hook v4 starting (read-only diagnostic, full TypeDef scan, 10 new candidate DLLs)");
 
   if (!resolve_mono()) {
     log_line("not running in SceShellUI, or a required Mono export is missing");
@@ -263,10 +263,33 @@ static int run_hook(void)
     return 1;
   }
 
+  /* v3's full TypeDef scan of both DLLs we already knew about (2315
+   * classes total) found no "Account" substring anywhere, let alone an
+   * exact VshNMPsnAccountModule -- so it genuinely lives elsewhere. The
+   * loader's directory listing of /system_ex/common_ex/lib (244 entries)
+   * gives real candidates we hadn't tried: a per-feature
+   * "ReactNative.Modules.Vsh.*" assembly family (separate from the
+   * "ReactNative.Modules.ShellUI.*" classes that live inside
+   * ReactNativeShellApp.dll) which matches VshNMPsnAccountModule's own
+   * "Vsh" prefix far better, plus the native LoginMgr/PSN/account backend
+   * DLLs the React bridge classes presumably call into. */
+  static const struct { const char *path; const char *label; } candidates[] = {
+      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.dll", "ReactNative.Modules.Vsh"},
+      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.WebAppLauncher.dll", "RN.Modules.Vsh.WebAppLauncher"},
+      {"/system_ex/common_ex/lib/ReactNative.Modules.Vsh.Telemetry.Nq.dll", "RN.Modules.Vsh.Telemetry.Nq"},
+      {"/system_ex/common_ex/lib/ReactNative.Components.Vsh.dll", "ReactNative.Components.Vsh"},
+      {"/system_ex/common_ex/lib/ReactNative.Vsh.Common.dll", "ReactNative.Vsh.Common"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.LoginMgr.dll", "Sce.Vsh.ShellUI.LoginMgr"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.ShellUI.LoginMgrWrapper.dll", "Sce.Vsh.ShellUI.LoginMgrWrapper"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.PsnUtil.dll", "Sce.Vsh.PsnUtil"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.Np.Manager.dll", "Sce.Vsh.Np.Manager"},
+      {"/system_ex/common_ex/lib/Sce.Vsh.UserServiceWrapper.dll", "Sce.Vsh.UserServiceWrapper"},
+  };
+
   int total_found = 0;
-  total_found += probe_assembly(domain, "/system_ex/common_ex/lib/Sce.Vsh.ShellUI.ReactNativeShellApp.dll",
-                                "ReactNativeShellApp");
-  total_found += probe_assembly(domain, "/system_ex/common_ex/lib/ReactNative.PUI.dll", "ReactNative.PUI");
+  for (const auto &c : candidates) {
+    total_found += probe_assembly(domain, c.path, c.label);
+  }
 
   log_line("done: VshNMPsnAccountModule resolved in %d place(s)", total_found);
   return total_found > 0 ? 0 : 2;
