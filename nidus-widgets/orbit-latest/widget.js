@@ -87,7 +87,16 @@
     coverTitle: { color: '#ffffff' },
     coverDots: { flexDirection: 'row', justifyContent: 'center', marginTop: 6 },
     coverDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#ffffff40', marginHorizontal: 3 },
-    coverDotActive: { backgroundColor: '#ffffff', width: 16 }
+    coverDotActive: { backgroundColor: '#ffffff', width: 16 },
+    // A button-hint footer baked into the widget's own card. The stock
+    // key-guide bar (input-and-focus.md) only labels its own fixed cases
+    // (Options -> Settings, X -> Select/Edit, arrows/L1/R1 while INSIDE a
+    // wh.Focusable tile) -- confirmed on-console it shows nothing for cover
+    // mode's custom L1/R1/X, since there's deliberately no Focusable here.
+    hintDivider: { height: 1, backgroundColor: '#ffffff30', marginTop: 8, marginBottom: 6 },
+    hintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
+    hintBadge: { borderWidth: 1, borderColor: '#ffffffa0', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, marginRight: 6 },
+    hintLabel: { color: '#ffffffc0', marginRight: 16 }
   });
 
   // A per-game catalog row: X (or press) launches Orbit Store. wh.Focusable
@@ -136,6 +145,14 @@
         selected ? ce(View, { style: styles.gridCellSelected }) : null
       );
     });
+  }
+
+  // One "[L1] Label" pair for the hint footer below.
+  function Hint(props) {
+    return ce(View, { style: { flexDirection: 'row', alignItems: 'center' } },
+      ce(View, { style: styles.hintBadge }, ce(Label, { style: styles.small }, props.button)),
+      ce(Label, { style: [styles.small, styles.hintLabel] }, props.label)
+    );
   }
 
   // The PS Store-style pagination strip under a full-tile cover: a dot per
@@ -324,7 +341,12 @@
             ce(Label, { style: styles.dim }, '?')),
       ce(View, { style: styles.coverOverlay },
         ce(Label, { style: [styles.body18, styles.coverTitle], numberOfLines: 1 }, String(item.title || item.titleId || '?')),
-        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null
+        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null,
+        ce(View, { style: styles.hintDivider }),
+        ce(View, { style: styles.hintRow },
+          allItems.length > 1 ? ce(Hint, { button: 'L1/R1', label: 'Jeu suivant' }) : null,
+          ce(Hint, { button: 'X', label: 'Lancer' })
+        )
       )
     );
   }
