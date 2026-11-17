@@ -165,6 +165,21 @@ static int write_file(const char *path, const char *content) {
     return (w == (ssize_t)len) ? 0 : -1;
 }
 
+/* Same as write_file, but for binary content (a PNG glyph, say) that may
+ * contain embedded NUL bytes -- write_file's strlen() would truncate it. */
+static int write_file_bytes(const char *path, const unsigned char *content, size_t len) {
+    int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd < 0) return -1;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t w = write(fd, content + off, len - off);
+        if (w <= 0) { close(fd); return -1; }
+        off += (size_t)w;
+    }
+    close(fd);
+    return 0;
+}
+
 static void deploy_hub_patch(int on) {
     if (on) {
         if (mkdir("/data/wh-widgets", 0755) != 0 && errno != EEXIST) { /* best effort */ }
@@ -224,18 +239,21 @@ static void deploy_orbit_latest(int on) {
             appdb_say("orbit-latest: could not create %s", ORBIT_LATEST_DIR);
             return;
         }
-        char cfg[512], js[512];
+        char cfg[512], js[512], glyph[512];
         snprintf(cfg, sizeof cfg, "%s/config.json", ORBIT_LATEST_DIR);
         snprintf(js, sizeof js, "%s/widget.js", ORBIT_LATEST_DIR);
-        if (write_file(cfg, ORBIT_LATEST_CONFIG_JSON) != 0 || write_file(js, ORBIT_LATEST_WIDGET_JS) != 0) {
+        snprintf(glyph, sizeof glyph, "%s/orbit.png", ORBIT_LATEST_DIR);
+        if (write_file(cfg, ORBIT_LATEST_CONFIG_JSON) != 0 || write_file(js, ORBIT_LATEST_WIDGET_JS) != 0 ||
+            write_file_bytes(glyph, ORBIT_LATEST_GLYPH_PNG, ORBIT_LATEST_GLYPH_PNG_LEN) != 0) {
             appdb_say("orbit-latest: failed writing widget files");
             return;
         }
         appdb_say("orbit-latest: deployed. Open the Welcome Hub, then check /data/orbit-latest.log");
     } else {
-        char cfg[512], js[512], settings[512];
+        char cfg[512], js[512], settings[512], glyph[512];
         snprintf(cfg, sizeof cfg, "%s/config.json", ORBIT_LATEST_DIR);
         snprintf(js, sizeof js, "%s/widget.js", ORBIT_LATEST_DIR);
+        snprintf(glyph, sizeof glyph, "%s/orbit.png", ORBIT_LATEST_DIR);
         /* The SDK's own resident payload saves chosen settings (display mode)
          * here once the widget declares a "settings" schema (settings.md).
          * rmdir() below silently fails on a non-empty directory, so without
@@ -244,6 +262,7 @@ static void deploy_orbit_latest(int on) {
         snprintf(settings, sizeof settings, "%s/.settings.json", ORBIT_LATEST_DIR);
         unlink(cfg);
         unlink(js);
+        unlink(glyph);
         unlink(settings);
         rmdir(ORBIT_LATEST_DIR);
         appdb_say("orbit-latest: removed");

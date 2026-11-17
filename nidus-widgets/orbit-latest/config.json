@@ -2,6 +2,7 @@
   "id": "orbit-latest",
   "title": "Orbit Store",
   "description": "Les derniers jeux ajoutes a Orbit Store.",
+  "glyph": "orbit.png",
   "iconFallback": "game",
   "size": 1,
   "settings": [
