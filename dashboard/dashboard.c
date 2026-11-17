@@ -693,6 +693,109 @@ static ssize_t read_request(int fd, char *req, size_t cap, char **body) {
     return (ssize_t)have;
 }
 
+/* True only for a connection from this same console (127.0.0.1/::1) -- the
+ * dashboard's own HTTP server binds INADDR_ANY, so without this check a
+ * route with no token would be reachable from anyone on the LAN. Same
+ * precedent as Orbit Store's own local_peer() gate on /api/v1/open-request. */
+static int is_loopback_peer(int fd) {
+    struct sockaddr_storage ss;
+    socklen_t sl = sizeof ss;
+    if (getpeername(fd, (struct sockaddr *)&ss, &sl) != 0) return 0;
+    if (ss.ss_family == AF_INET)
+        return ((struct sockaddr_in *)&ss)->sin_addr.s_addr == htonl(INADDR_LOOPBACK);
+    if (ss.ss_family == AF_INET6) {
+        static const unsigned char v6loop[16] = {0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1};
+        return !memcmp(&((struct sockaddr_in6 *)&ss)->sin6_addr, v6loop, 16);
+    }
+    return 0;
+}
+
+/* Quick, short-timeout probe: does anything answer Orbit Store's own
+ * service port right now? Just a TCP connect, no HTTP round-trip needed. */
+static int orbit_backend_up(void) {
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) return 0;
+    struct timeval tv = { .tv_sec = 0, .tv_usec = 300000 };
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(34177);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    int r = connect(s, (struct sockaddr *)&a, sizeof a);
+    close(s);
+    return r == 0;
+}
+
+/* Hands Orbit Store's own saved payload to the console's jailbreak ELF
+ * loader (127.0.0.1:9021), the exact same plain-TCP "connect, stream the
+ * raw ELF bytes, half-close, drain" protocol Orbit Store's own TV app uses
+ * (app/src/orbit/starter.cpp) when its backend doesn't answer -- just done
+ * here from the dashboard's resident payload instead, so the download
+ * service can be started without switching the console to the TV app. */
+static int orbit_backend_start(void) {
+    static const char *ELF_PATH = "/data/orbit-store/orbit_store.elf";
+    FILE *f = fopen(ELF_PATH, "rb");
+    if (!f) { appdb_say("orbit backend start: %s not found", ELF_PATH); return -1; }
+
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0) { fclose(f); return -1; }
+    struct timeval tv = { .tv_sec = 2, .tv_usec = 0 };
+    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    struct sockaddr_in a = {0};
+    a.sin_family = AF_INET;
+    a.sin_port = htons(9021);
+    a.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (connect(s, (struct sockaddr *)&a, sizeof a) != 0) {
+        appdb_say("orbit backend start: no ELF loader on 127.0.0.1:9021 (%s)", strerror(errno));
+        close(s); fclose(f);
+        return -1;
+    }
+
+    char buf[65536];
+    size_t total = 0;
+    int ok = 1;
+    for (;;) {
+        size_t got = fread(buf, 1, sizeof buf, f);
+        if (got == 0) break;
+        size_t sent = 0;
+        while (sent < got) {
+            ssize_t n = send(s, buf + sent, got - sent, 0);
+            if (n < 0 && errno == EINTR) continue;
+            if (n <= 0) { ok = 0; break; }
+            sent += (size_t)n;
+        }
+        total += sent;
+        if (!ok) break;
+    }
+    fclose(f);
+    if (ok) {
+        shutdown(s, SHUT_WR);
+        char ignored[256];
+        while (recv(s, ignored, sizeof ignored, 0) > 0) {}
+    }
+    close(s);
+    appdb_say(ok ? "orbit backend: sent %zu bytes to loader" : "orbit backend: send failed part way",
+               total);
+    return ok ? 0 : -1;
+}
+
+/* Fire-and-forget: if Orbit Store's download service isn't already
+ * answering, start it via the loader above. Never launches the TV app
+ * (PPSA99177/psgm:play) -- only the backend payload, same thing the TV app
+ * itself would hand to the loader if it were opened and found nothing
+ * running. Forked so a slow/stuck loader can never hold up the HTTP reply. */
+static void orbit_backend_ensure_async(void) {
+    if (orbit_backend_up()) return;
+    pid_t pid = fork();
+    if (pid == 0) {
+        if (!orbit_backend_up()) orbit_backend_start();
+        _exit(0);
+    } else if (pid < 0) {
+        appdb_say("orbit backend ensure: fork failed (%s)", strerror(errno));
+    }
+}
+
 static void handle(int fd) {
     static char req[8192];
     char *body;
@@ -753,6 +856,13 @@ static void handle(int fd) {
         static char pb[4096];
         probe_json(pb, sizeof pb);
         reply(fd, 200, "application/json", pb);
+    } else if (!strcmp(method, "GET") && !strcmp(path, "/api/orbit_ensure_running")) {
+        /* Called by the orbit-latest widget itself (plain fetch(), no auth
+         * header available) -- loopback-only in place of the token, same
+         * precedent as Orbit Store's own /api/v1/open-request. */
+        if (!is_loopback_peer(fd)) { reply(fd, 403, "text/plain", "forbidden"); return; }
+        orbit_backend_ensure_async();
+        reply(fd, 200, "application/json", "{\"ok\":true}");
     } else if (!strcmp(method, "POST") && !strcmp(path, "/api/quit")) {
         if (!has_header(req)) { reply(fd, 403, "text/plain", "forbidden"); return; }
         g_quit = 1;

@@ -56,6 +56,11 @@
   var ORBIT_STORE_TITLE_ID = 'PPSA99177';
   var CATALOG_URL = 'http://127.0.0.1:34177/api/v1/catalog';
   var OPEN_REQUEST_URL = 'http://127.0.0.1:34177/api/v1/open-request';
+  // The dashboard payload's own server (always resident, separate from
+  // Orbit Store's own backend) -- can hand Orbit's saved payload to the
+  // console's ELF loader when nothing answers on 34177, without touching
+  // the TV app/psgm:play at all.
+  var ENSURE_RUNNING_URL = 'http://127.0.0.1:8096/api/orbit_ensure_running';
   var MAT = '#17191ef0';
 
   var styles = wh.StyleSheet.create({
@@ -157,6 +162,12 @@
 
     React.useEffect(function () {
       mounted.current = true;
+      // Best-effort, fire-and-forget: ask the dashboard payload to start
+      // Orbit Store's download service if it isn't already running, so the
+      // widget's catalog comes back even on a cold boot -- never launches
+      // the TV app itself, just the backend it would otherwise have to hand
+      // to the ELF loader on its own next open.
+      fetch(ENSURE_RUNNING_URL).catch(function (e) { log('ensure-running FAILED: ' + ((e && e.message) || e)); });
       function load() {
         fetch(CATALOG_URL, { headers: { Accept: 'application/json' } })
           .then(function (r) { return r.json(); })
