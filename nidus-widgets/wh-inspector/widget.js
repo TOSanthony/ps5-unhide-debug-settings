@@ -1,16 +1,17 @@
-// wh-inspector v23: v22 found that both base_dll.c modules NiSiE5q6 and
-// 2734tBS6 expose a KeyGuidePS with an own static method `processKeyGuide`
-// (NiSiE5q6.KeyGuidePS.processKeyGuide, 2734tBS6.KeyGuidePS.processKeyGuide),
-// but reflection alone only shows the method NAME, not what it's called with.
-// This version monkey-patches processKeyGuide on both classes (and PopupHintPS
-// open/close, which might be the same bar under a different name) so every
-// REAL call -- triggered by focusing/navigating between widgets on the Hub --
-// gets its arguments and return value logged. The goal: catch whatever
-// differs between focusing Accessibilite (bar renders outside/below) and
-// focusing Orbit Store (bar renders inside/overlapping), e.g. a size flag,
-// a layout rect, a widget-id string, a boolean.
+// wh-inspector v24: v23 confirmed processKeyGuide(2734tBS6.KeyGuidePS) is the
+// content-bearing key-guide call, and that its props (style:{flex:1} /
+// {marginLeft:'auto'}, autoHideBehavior:'hideWhenTargetLosesFocus',
+// targetComponent:<fiber id>) are IDENTICAL in shape for every widget -- only
+// targetComponent (a React fiber id, one per widget tile on the Hub) differs.
+// So the visible difference (bar inside Orbit Store's card vs below
+// Accessibilite's) isn't explained by anything processKeyGuide itself
+// receives. This version additionally dumps `wh.__hubFrame` (an own key of
+// the per-widget `wh` bridge that NAME-wise looks like shared Hub-frame
+// state) the first time each new targetComponent id is seen, to try to
+// correlate a fiber id with an actual widget identity/geometry and find
+// something that DOES differ between widgets at the Hub level.
 // Everything found is logged to /data/wh-inspector.log via the dashboard's
-// existing /__log endpoint, same plumbing as v21/v22.
+// existing /__log endpoint, same plumbing as v21/v22/v23.
 (function (wh) {
   var root = globalThis;
   var q = [];
@@ -62,9 +63,9 @@
   }, 350);
 
   var already = false;
-  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v23-done') === '1'; } catch (e) {}
+  try { already = root.localStorage && root.localStorage.getItem('wh-inspector-v24-done') === '1'; } catch (e) {}
   if (already) { return; }
-  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v23-done', '1'); } catch (e) {}
+  try { if (root.localStorage) root.localStorage.setItem('wh-inspector-v24-done', '1'); } catch (e) {}
 
   function ownKeys(obj) {
     try { return Object.getOwnPropertyNames(obj).join(','); } catch (e) { return 'n/a(' + e.message + ')'; }
@@ -74,6 +75,25 @@
   // arguments and return value, then falls through to the original. Returns
   // true if the wrap was installed.
   var callCounts = {};
+  var seenTargets = {};
+  // Every time 2734tBS6.KeyGuidePS.processKeyGuide is called with a NEW
+  // targetComponent id (a new widget tile gaining focus), dump wh.__hubFrame
+  // once, tagged with that id -- so we can line up a fiber id with whatever
+  // per-widget state __hubFrame exposes (if it exposes anything at all).
+  function maybeDumpHubFrameFor(args0) {
+    try {
+      if (!args0 || typeof args0 !== 'object') return;
+      var tc = args0.targetComponent;
+      if (tc === undefined || tc === null) return;
+      if (seenTargets[tc]) return;
+      seenTargets[tc] = true;
+      queue('NEW targetComponent=' + tc + ' -- wh.__hubFrame: ' + safeStr(wh.__hubFrame, 0));
+      queue('NEW targetComponent=' + tc + ' -- wh.dims: ' + safeStr(wh.dims, 0) + ' wh.WidgetSize: ' + safeStr(wh.WidgetSize, 0));
+    } catch (e) {
+      queue('maybeDumpHubFrameFor EXCEPTION: ' + (e && e.message ? e.message : e));
+    }
+  }
+
   function wrapMethod(obj, name, tag) {
     try {
       var orig = obj[name];
@@ -86,6 +106,7 @@
           argsDesc = Array.prototype.slice.call(arguments).map(function (a) { return safeStr(a); }).join(' | ');
         } catch (e) { argsDesc = 'arg-stringify-failed: ' + (e && e.message); }
         queue(tag + ' CALL#' + n + ' args: ' + argsDesc);
+        if (tag === '2734tBS6.KeyGuidePS') { maybeDumpHubFrameFor(arguments[0]); }
         var ret;
         var threw = null;
         try {
@@ -152,7 +173,7 @@
         return wh.React.createElement(wh.View || 'View', { style: { width: 8, height: 8 } });
       });
     }
-    queue('wh-inspector v23 probe installed -- navigate between widgets on the Hub now to trigger logged calls');
+    queue('wh-inspector v24 probe installed -- navigate between widgets on the Hub now to trigger logged calls');
   } catch (e) {
     sendNow('EXCEPTION: ' + (e && e.message ? e.message : e) + (e && e.stack ? ' | ' + String(e.stack).slice(0, 300) : ''));
   }
