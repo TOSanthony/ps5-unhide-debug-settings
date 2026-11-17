@@ -242,7 +242,17 @@
     var H = (props && props.height) || 152;
     var compact = H < 300;              // DEFAULT (152)
     var pad = 32, titleH = 40, gap = 8;
-    var innerW = W - pad, innerH = H - pad - titleH - gap;
+    // The Hub's own key-guide hint bar (Edit/Prev/Next/Settings) is an
+    // overlay anchored to the bottom of whichever tile is focused -- stock
+    // widgets whose own content stops short of the tile's real bottom edge
+    // (e.g. Accessibility's icon+text) never collide with it, since it has
+    // empty space to sit in; ours filled the tile edge to edge (confirmed
+    // on-console: the games/covers of a full-bleed layout get overlapped by
+    // it, same as PS Store/PS Plus's own cover art). Reserving blank space
+    // here, instead of using the full tile, leaves it room without touching
+    // any game.
+    var footerReserve = compact ? 0 : 56; // DEFAULT tiles are too short to spare this
+    var innerW = W - pad, innerH = H - pad - titleH - gap - footerReserve;
 
     // Cover mode, once there's something to show: the cover fills the whole
     // tile edge to edge (no card padding, no separate header row) -- the
