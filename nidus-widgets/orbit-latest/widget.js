@@ -136,7 +136,9 @@
     // gap all around it for the border to actually be visible in -- the
     // earlier attempt had the image almost touching the border, which made
     // it unreadable regardless of color/stacking.
-    var img = slot - 18;
+    // A thin ring, like the native highlight (e.g. the controller selector
+    // on the Welcome screen) -- not a thick block.
+    var img = slot - 6;
     return ce(wh.Focusable, { onPress: props.onPress, style: { width: slot, height: slot, alignItems: 'center', justifyContent: 'center' } },
       function (selected) {
         return ce(View, { style: [styles.gridFrame, selected ? styles.gridFrameSelected : null, { width: slot, height: slot }] },
