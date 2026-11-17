@@ -87,15 +87,7 @@
     coverTitle: { color: '#ffffff' },
     coverDots: { flexDirection: 'row', justifyContent: 'center', marginTop: 6 },
     coverDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: '#ffffff40', marginHorizontal: 3 },
-    coverDotActive: { backgroundColor: '#ffffff', width: 16 },
-    // A button-hint footer baked into the widget's own card, same idea as
-    // the stock "Top 10" widget's "Learn More  [L1]/[R1]" row: a divider,
-    // then badge+label pairs, instead of relying on anything drawn outside
-    // the tile.
-    hintDivider: { height: 1, backgroundColor: '#ffffff30', marginTop: 8, marginBottom: 6 },
-    hintRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center' },
-    hintBadge: { borderWidth: 1, borderColor: '#ffffffa0', borderRadius: 4, paddingHorizontal: 5, paddingVertical: 1, marginRight: 6 },
-    hintLabel: { color: '#ffffffc0', marginRight: 16 }
+    coverDotActive: { backgroundColor: '#ffffff', width: 16 }
   });
 
   // A per-game catalog row: X (or press) launches Orbit Store. wh.Focusable
@@ -130,7 +122,12 @@
       style: [styles.gridCell, { width: size, height: size }],
       focusedStyle: styles.gridCellFocused
     }, function (selected) {
-      return ce(View, { style: { width: size, height: size } },
+      // A border overlay can be hidden behind the cover image depending on
+      // paint order, so the main indicator is opacity: the selected cell is
+      // full brightness, every other one is dimmed -- unmissable regardless
+      // of stacking, and it's how you tell which game you're on while
+      // arrowing around the grid.
+      return ce(View, { style: { width: size, height: size, opacity: selected ? 1 : 0.45 } },
         Image && item.cover
           ? ce(Image, { source: { uri: item.cover }, resizeMode: 'cover', style: { width: size, height: size } })
           : null,
@@ -139,14 +136,6 @@
         selected ? ce(View, { style: styles.gridCellSelected }) : null
       );
     });
-  }
-
-  // One "[L1] Label" pair for the hint footer below.
-  function Hint(props) {
-    return ce(View, { style: { flexDirection: 'row', alignItems: 'center' } },
-      ce(View, { style: styles.hintBadge }, ce(Label, { style: styles.small }, props.button)),
-      ce(Label, { style: [styles.small, styles.hintLabel] }, props.label)
-    );
   }
 
   // The PS Store-style pagination strip under a full-tile cover: a dot per
@@ -335,12 +324,7 @@
             ce(Label, { style: styles.dim }, '?')),
       ce(View, { style: styles.coverOverlay },
         ce(Label, { style: [styles.body18, styles.coverTitle], numberOfLines: 1 }, String(item.title || item.titleId || '?')),
-        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null,
-        ce(View, { style: styles.hintDivider }),
-        ce(View, { style: styles.hintRow },
-          allItems.length > 1 ? ce(Hint, { button: 'L1/R1', label: 'Jeu suivant' }) : null,
-          ce(Hint, { button: 'X', label: 'Lancer' })
-        )
+        allItems.length > 1 ? ce(CoverDots, { index: index, total: allItems.length }) : null
       )
     );
   }
