@@ -61,6 +61,25 @@
   // console's ELF loader when nothing answers on 34177, without touching
   // the TV app/psgm:play at all.
   var ENSURE_RUNNING_URL = 'http://127.0.0.1:8096/api/orbit_ensure_running';
+  // TEMP DEBUG (remove once the key-guide-bar investigation is done): posts
+  // to the exact same /__log endpoint + widget tag wh-inspector v23-25 use,
+  // so a GridCell/Row becoming `selected` interleaves, by timestamp, into
+  // the SAME /data/wh-inspector.log -- no separate log to fetch or
+  // cross-reference. The goal is to see whether moving the selection
+  // WITHIN this widget's own grid/list ever produces a new
+  // "2734tBS6.KeyGuidePS CALL ... targetComponent=<id>" entry in that same
+  // file around the same second, which would mean the Hub's key-guide
+  // system re-targets per internal Focusable item (not just per widget).
+  var __lastSelLogged = null;
+  function debugLogSelect(kind, id) {
+    if (__lastSelLogged === kind + ':' + id) return;
+    __lastSelLogged = kind + ':' + id;
+    try {
+      var url = 'http://127.0.0.1:8096/__log?w=77682d696e73706563746f72';
+      var msg = 'ORBIT ' + kind + ' selected id=' + id;
+      if (fetch) fetch(url, { method: 'POST', body: msg }).catch(function () {});
+    } catch (e) {}
+  }
   var MAT = '#17191ef0';
 
   var styles = wh.StyleSheet.create({
@@ -112,6 +131,7 @@
       style: [styles.row, { height: props.rowHeight }],
       focusedStyle: styles.rowFocused
     }, function (selected) {
+      if (selected) debugLogSelect('Row', item.id || item.titleId || '?');
       var titleStyle = props.compact ? [styles.small, { flex: 1 }] : { flex: 1, fontSize: F.Size3XSmall };
       return ce(View, { style: { flexDirection: 'row', alignItems: 'center', flex: 1 } },
         !props.compact
@@ -141,6 +161,7 @@
     var img = slot - 6;
     return ce(wh.Focusable, { onPress: props.onPress, style: { width: slot, height: slot, alignItems: 'center', justifyContent: 'center' } },
       function (selected) {
+        if (selected) debugLogSelect('GridCell', item.id || item.titleId || '?');
         return ce(View, { style: [styles.gridFrame, selected ? styles.gridFrameSelected : null, { width: slot, height: slot }] },
           ce(View, { style: [styles.gridImg, { width: img, height: img }] },
             Image && item.cover
